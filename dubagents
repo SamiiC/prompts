@@ -1,0 +1,16 @@
+[agents.md](http://agents.md) file
+
+    ## Context Discipline & Subagent Policy
+    
+    
+    Subagents are the 
+    **primary mechanism**
+     for complex work. Use them by default for:
+    - Multi-file changes (≥3 files) or cross-surface edits (frontend + worker + data)
+    - Research-heavy tasks (audits, schema analysis, migration planning)
+    - Any step that might consume >20% of context budget
+
+Break your task into 3-5 specialized sub-agents. Each should have:
+1. A clear, focused responsibility
+2. Specific information to gather
+3. Well-defined boundaries
