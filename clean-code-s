@@ -1,0 +1,1648 @@
+---
+name: guava-style-refactor
+version: 1.0.0
+description: |
+  Refactor Java Spring Boot microservice code to match Google Guava's quality
+  standards. Use when the user asks to improve, clean up, refactor, or rewrite
+  any Java class — controllers, services, utilities, helpers, DTOs, exceptions,
+  or any other component. Also use when the user says code "feels messy",
+  "isn't clean", or "needs to be more maintainable". Guava is the reference
+  standard: every pattern, annotation, Javadoc style, null-handling approach,
+  and naming convention should mirror how Guava's own authors write code.
+allowed-tools:
+  - Read
+  - Write
+  - Edit
+  - Grep
+  - Glob
+---
+
+# Guava-Style Java Refactor for Spring Boot
+
+You are a senior Java engineer who has deeply internalized the Google Guava codebase. Every decision you make — naming, structure, null handling, Javadoc, imports, validation — should be something a Guava author would recognize and approve of, adapted for a Spring Boot web context.
+
+Before touching any file, read it fully. Understand what it does, what it depends on, and what calls it. Refactor holistically, not line-by-line.
+
+---
+
+## GROUND RULES (non-negotiable)
+
+These apply to every single file, no exceptions.
+
+### 1. Imports: static-first, no wildcards, ordered
+
+```java
+// WRONG
+import java.util.*;
+import org.springframework.web.bind.annotation.*;
+import com.google.common.base.Strings;
+
+// RIGHT — static imports first, then regular, blank line between groups,
+// alphabetical within each group
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Strings.isNullOrEmpty;
+
+import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableList;
+import java.util.List;
+import java.util.Optional;
+import org.springframework.stereotype.Service;
+import org.springframework.web.bind.annotation.GetMapping;
+```
+
+### 2. Formatting
+
+- **2-space indentation** — this is non-negotiable in Guava source and Google Java Style
+- Line length: 100 characters maximum
+- Opening brace on the same line, never on its own line
+- One blank line between methods; two blank lines between top-level declarations
+- No trailing whitespace
+
+### 3. `final` everywhere it's honest
+
+```java
+// Fields that don't change are final
+private final UserRepository userRepository;
+private final Clock clock;
+
+// Parameters that aren't reassigned are final
+public User findById(final long id) { ... }
+
+// Local variables that don't change are final
+final String normalized = name.trim().toLowerCase(Locale.ROOT);
+```
+
+### 4. `@Override` on every override
+
+No exceptions. Every method overriding a supertype or implementing an interface gets `@Override`.
+
+### 5. No raw types
+
+```java
+// WRONG
+List users = new ArrayList();
+Map config = new HashMap();
+
+// RIGHT
+List<User> users = new ArrayList<>();
+Map<String, String> config = new HashMap<>();
+```
+
+---
+
+## UTILITY CLASSES
+
+The Guava blueprint: `public final class Foo { private Foo() {} }`. Every static utility class follows this exactly.
+
+```java
+// WRONG
+public class StringUtils {
+  public static String normalize(String input) { ... }
+}
+
+// RIGHT — modeled directly on Guava's Strings, MoreObjects, etc.
+/**
+ * Static utility methods for {@link String} manipulation.
+ *
+ * <p>These methods supplement those already provided by {@link
+ * com.google.common.base.Strings} and the JDK.
+ */
+public final class StringUtils {
+
+  // Private constructor — not instantiable
+  private StringUtils() {}
+
+  /**
+   * Returns the trimmed, lowercased form of {@code input}, or {@code null}
+   * if {@code input} is null or blank after trimming.
+   *
+   * @param input the string to normalize; may be null
+   * @return the normalized string, or {@code null}
+   */
+  public static @Nullable String normalizeOrNull(@Nullable String input) {
+    if (input == null) {
+      return null;
+    }
+    final String trimmed = input.trim();
+    return trimmed.isEmpty() ? null : trimmed.toLowerCase(Locale.ROOT);
+  }
+}
+```
+
+Key rules:
+- `public final class` — never abstract, never subclassable
+- Private no-arg constructor with no body or a comment
+- Every method is `public static`
+- Null inputs documented with `@Nullable`; non-null documented with `@param`
+- No mutable static state ever
+
+---
+
+## NULL HANDLING
+
+Guava's approach: be explicit and fail fast. Use `@Nullable` for things that can be null; everything else is non-null by contract.
+
+```java
+// Add JSpecify null annotations to your package-info.java
+@NullMarked
+package com.example.myservice;
+
+import org.jspecify.annotations.NullMarked;
+```
+
+```java
+// In method signatures:
+import org.jspecify.annotations.Nullable;
+
+// Nullable input, nullable output — annotate both
+public @Nullable User findByEmail(@Nullable String email) { ... }
+
+// Non-null by contract — nothing needed, NullMarked covers it
+public User findById(long id) { ... }
+```
+
+### Preconditions at method entry (exactly like Guava does it)
+
+```java
+// WRONG — too late, no message, hard to debug
+public User createUser(String name, String email) {
+  if (name == null) throw new NullPointerException();
+  // ...
+}
+
+// RIGHT — Guava style: checkNotNull with descriptive message, at the top
+public User createUser(String name, String email) {
+  checkNotNull(name, "name");
+  checkNotNull(email, "email");
+  checkArgument(!name.isBlank(), "name must not be blank");
+  checkArgument(name.length() <= 100, "name too long: %s", name.length());
+  checkArgument(email.contains("@"), "invalid email: %s", email);
+  // business logic starts here
+}
+```
+
+Rules:
+- `checkNotNull(ref, "fieldName")` — the message is just the parameter name in Guava
+- `checkArgument(expr, "description: %s", value)` — always include the bad value in the message
+- `checkState(expr, "description")` — for internal consistency, not caller errors
+- Always use `%s` placeholders, never string concatenation inside the check call (it's evaluated eagerly even when the check passes)
+- All checks before any computation
+
+---
+
+## PRECONDITIONS: THE THREE-WAY SPLIT
+
+Guava distinguishes these precisely. Follow the same convention:
+
+| Situation | Method |
+|---|---|
+| Caller passed invalid input | `Preconditions.checkArgument` |
+| Object in wrong state for this call | `Preconditions.checkState` |
+| Null where null is not allowed | `Preconditions.checkNotNull` |
+| Internal invariant that should be impossible to violate | `Verify.verify` |
+
+Never use `Objects.requireNonNull` — use `checkNotNull`. Never throw `RuntimeException` directly — throw the most specific type.
+
+---
+
+## SERVICES (Spring `@Service`)
+
+Model on Guava's `AbstractService` and similar: clear interface contract, implementation hidden behind it, stateless where possible.
+
+```java
+// WRONG — concrete class exposed, no interface, mixed concerns
+@Service
+public class UserService {
+  @Autowired
+  UserRepository repo;
+
+  public User getUser(Long id) {
+    if (id == null) return null;
+    return repo.findById(id).orElse(null);
+  }
+}
+
+// RIGHT — Guava style: interface first, implementation separate
+/**
+ * Manages user lifecycle operations.
+ *
+ * <p>Implementations must be thread-safe.
+ */
+public interface UserService {
+
+  /**
+   * Returns the user with the given {@code id}.
+   *
+   * @param id the user's unique identifier; must be positive
+   * @return the matching user
+   * @throws IllegalArgumentException if {@code id} is not positive
+   * @throws NoSuchElementException if no user with {@code id} exists
+   */
+  User findById(long id);
+
+  /**
+   * Creates a new user.
+   *
+   * @param request the creation parameters; must not be null
+   * @return the created user, with its generated ID populated
+   * @throws IllegalArgumentException if {@code request} fails validation
+   * @throws DuplicateEmailException if the email is already registered
+   */
+  User create(CreateUserRequest request);
+}
+```
+
+```java
+/**
+ * Default {@link UserService} implementation backed by {@link UserRepository}.
+ */
+@Service
+final class DefaultUserService implements UserService {
+
+  private final UserRepository userRepository;
+  private final Clock clock;
+
+  // Constructor injection — never field injection
+  DefaultUserService(UserRepository userRepository, Clock clock) {
+    this.userRepository = checkNotNull(userRepository, "userRepository");
+    this.clock = checkNotNull(clock, "clock");
+  }
+
+  @Override
+  public User findById(long id) {
+    checkArgument(id > 0, "id must be positive: %s", id);
+    return userRepository.findById(id)
+        .orElseThrow(() -> new NoSuchElementException("no user with id: " + id));
+  }
+
+  @Override
+  public User create(CreateUserRequest request) {
+    checkNotNull(request, "request");
+    // validate first, then act
+    validateCreateRequest(request);
+    // ...
+  }
+
+  // Private helper — package-private only if needed for testing (@VisibleForTesting)
+  private void validateCreateRequest(CreateUserRequest request) {
+    checkArgument(!isNullOrEmpty(request.name()), "name must not be empty");
+    checkArgument(request.name().length() <= 100,
+        "name too long (%s chars): %s", request.name().length(), request.name());
+  }
+}
+```
+
+Rules:
+- Implementation class is `final` and package-private (no `public`)
+- Class name: `DefaultFooService`, `SimpleFooService` — never just `FooServiceImpl`
+- Constructor injection always; `@Autowired` is optional in Spring but add it for clarity
+- Validate at the top of every public method
+- Private helpers are `private`; only use `@VisibleForTesting` + package-private if a test needs it
+
+---
+
+## CONTROLLERS (Spring `@RestController`)
+
+Controllers are thin. They translate HTTP → service call → HTTP. No business logic.
+
+```java
+// WRONG — logic in controller, mixed concerns
+@RestController
+public class UserController {
+  @Autowired
+  UserRepository userRepo;
+
+  @GetMapping("/users/{id}")
+  public ResponseEntity getUser(@PathVariable Long id) {
+    if (id == null || id < 0) {
+      return ResponseEntity.badRequest().build();
+    }
+    Optional<User> user = userRepo.findById(id);
+    if (user.isEmpty()) return ResponseEntity.notFound().build();
+    return ResponseEntity.ok(user.get());
+  }
+}
+
+// RIGHT — Guava-inspired: thin, clear, delegates everything
+/**
+ * REST endpoints for user management.
+ *
+ * <p>All validation and business logic lives in {@link UserService}.
+ */
+@RestController
+@RequestMapping("/api/v1/users")
+final class UserController {
+
+  private final UserService userService;
+
+  UserController(UserService userService) {
+    this.userService = checkNotNull(userService, "userService");
+  }
+
+  /**
+   * Returns the user with the given {@code id}.
+   *
+   * @param id the user's unique identifier
+   * @return 200 with the user, 404 if not found, 400 if {@code id} is invalid
+   */
+  @GetMapping("/{id}")
+  ResponseEntity<UserResponse> findById(@PathVariable long id) {
+    try {
+      final User user = userService.findById(id);
+      return ResponseEntity.ok(UserResponse.from(user));
+    } catch (IllegalArgumentException e) {
+      return ResponseEntity.badRequest().build();
+    } catch (NoSuchElementException e) {
+      return ResponseEntity.notFound().build();
+    }
+  }
+
+  @PostMapping
+  @ResponseStatus(HttpStatus.CREATED)
+  UserResponse create(@RequestBody @Valid CreateUserRequest request) {
+    return UserResponse.from(userService.create(request));
+  }
+}
+```
+
+Rules:
+- `final` class, package-private
+- One constructor, constructor injection, `checkNotNull` on each dependency
+- Each method is short; if it grows past ~15 lines, extract a private helper or push logic to the service
+- Return types are always typed: `ResponseEntity<UserResponse>`, not raw `ResponseEntity`
+- Exception mapping belongs in a `@ControllerAdvice`, not scattered across controller methods
+
+---
+
+## VALUE OBJECTS / DTOs / RECORDS
+
+Prefer Java records for immutable data transfer. When you need more control, use the Guava builder pattern.
+
+```java
+// For simple DTOs: Java record (Java 16+)
+/**
+ * Request body for user creation.
+ *
+ * @param name the display name; must not be blank
+ * @param email the email address; must be a valid email
+ */
+public record CreateUserRequest(
+    @NotBlank @Size(max = 100) String name,
+    @NotBlank @Email String email) {}
+```
+
+```java
+// For richer objects needing validation on construction: Guava builder pattern
+/**
+ * An immutable representation of a user as returned by the API.
+ *
+ * <p>Use {@link #builder()} to create instances.
+ */
+public final class UserResponse {
+
+  private final long id;
+  private final String name;
+  private final String email;
+  private final Instant createdAt;
+
+  private UserResponse(Builder builder) {
+    this.id = builder.id;
+    this.name = checkNotNull(builder.name, "name");
+    this.email = checkNotNull(builder.email, "email");
+    this.createdAt = checkNotNull(builder.createdAt, "createdAt");
+  }
+
+  /** Returns a new builder for {@link UserResponse}. */
+  public static Builder builder() {
+    return new Builder();
+  }
+
+  /** Creates a {@link UserResponse} from the domain {@link User} object. */
+  public static UserResponse from(User user) {
+    checkNotNull(user, "user");
+    return builder()
+        .id(user.getId())
+        .name(user.getName())
+        .email(user.getEmail())
+        .createdAt(user.getCreatedAt())
+        .build();
+  }
+
+  public long id() { return id; }
+  public String name() { return name; }
+  public String email() { return email; }
+  public Instant createdAt() { return createdAt; }
+
+  /** Builder for {@link UserResponse}. */
+  public static final class Builder {
+    private long id;
+    private @Nullable String name;
+    private @Nullable String email;
+    private @Nullable Instant createdAt;
+
+    private Builder() {}
+
+    @CanIgnoreReturnValue
+    public Builder id(long id) {
+      checkArgument(id > 0, "id must be positive: %s", id);
+      this.id = id;
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder name(String name) {
+      this.name = checkNotNull(name, "name");
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder email(String email) {
+      this.email = checkNotNull(email, "email");
+      return this;
+    }
+
+    @CanIgnoreReturnValue
+    public Builder createdAt(Instant createdAt) {
+      this.createdAt = checkNotNull(createdAt, "createdAt");
+      return this;
+    }
+
+    public UserResponse build() {
+      return new UserResponse(this);
+    }
+  }
+}
+```
+
+---
+
+## CUSTOM EXCEPTIONS
+
+```java
+// WRONG — too generic, no context
+throw new RuntimeException("User not found");
+
+// RIGHT — specific exception type, descriptive message, context included
+/**
+ * Thrown when an operation is requested on a user that does not exist.
+ */
+public final class UserNotFoundException extends RuntimeException {
+
+  private final long userId;
+
+  public UserNotFoundException(long userId) {
+    super("no user with id: " + userId);
+    this.userId = userId;
+  }
+
+  /** Returns the ID of the user that was not found. */
+  public long userId() {
+    return userId;
+  }
+}
+```
+
+Rules:
+- One exception per failure mode — not one generic `ServiceException`
+- Always include the bad value in the message
+- Accessor for the structured data (so a `@ControllerAdvice` can use it)
+- `public final class`, never abstract unless you're building a hierarchy
+- No checked exceptions in Spring services — use unchecked
+
+---
+
+## JAVADOC
+
+Follow Guava's Javadoc standard exactly.
+
+```java
+// WRONG — no Javadoc, or vague Javadoc
+public User findById(long id) { ... }
+
+// WRONG — restates what the method name already says
+/**
+ * Find user by id.
+ */
+public User findById(long id) { ... }
+
+// RIGHT — Guava style: explains the contract, not the implementation
+/**
+ * Returns the user with the given {@code id}.
+ *
+ * <p>If no user exists with {@code id}, throws {@link NoSuchElementException}
+ * rather than returning {@code null}.
+ *
+ * @param id the user's unique database identifier; must be positive
+ * @return the user, never {@code null}
+ * @throws IllegalArgumentException if {@code id} is not positive
+ * @throws NoSuchElementException if no user with {@code id} exists
+ */
+public User findById(long id) { ... }
+```
+
+Rules:
+- First sentence: "Returns ...", "Creates ...", "Removes ..." — action verb, object
+- `<p>` tag for additional paragraphs after the first
+- `{@code value}` for inline code; `{@link ClassName}` or `{@link ClassName#method}` for references
+- `@param` — every parameter, describe constraints (e.g. "must be positive", "may be null")
+- `@return` — what it is and when it could be null (if ever)
+- `@throws` — every declared exception + any important unchecked ones
+- Class-level Javadoc: describe what the class is, not how it's implemented; note thread-safety
+- Utility class Javadoc: "Static utility methods pertaining to {@link Foo}."
+- Do not document `@Override` methods unless you're adding contract details the parent didn't cover
+
+---
+
+## IMMUTABILITY AND COLLECTIONS
+
+```java
+// WRONG — mutable, leaks internals
+private List<String> tags = new ArrayList<>();
+
+public List<String> getTags() {
+  return tags; // caller can mutate this!
+}
+
+// RIGHT — Guava style: defensive immutability
+private final ImmutableList<String> tags;
+
+public ImmutableList<String> tags() {
+  return tags; // safe — immutable
+}
+
+// Or with Java builtins (acceptable, not Guava):
+private final List<String> tags;
+
+public List<String> tags() {
+  return Collections.unmodifiableList(tags);
+}
+```
+
+```java
+// Building immutable collections — prefer builders or factory methods
+ImmutableList<String> allowedRoles = ImmutableList.of("ADMIN", "USER", "VIEWER");
+
+ImmutableMap<String, Integer> statusCodes = ImmutableMap.<String, Integer>builder()
+    .put("OK", 200)
+    .put("NOT_FOUND", 404)
+    .put("SERVER_ERROR", 500)
+    .buildOrThrow();
+
+// Java 9+ factory methods are also acceptable
+List<String> roles = List.of("ADMIN", "USER");
+Map<String, Integer> codes = Map.of("OK", 200, "NOT_FOUND", 404);
+```
+
+---
+
+## NAMING CONVENTIONS
+
+Follow Google Java Style exactly.
+
+| Kind | Convention | Example |
+|---|---|---|
+| Classes | UpperCamelCase | `UserService`, `DefaultUserService` |
+| Methods | lowerCamelCase, verb-first | `findById`, `createUser`, `isActive` |
+| Fields | lowerCamelCase | `userRepository`, `clock` |
+| Constants | UPPER_SNAKE_CASE | `MAX_RETRY_COUNT`, `DEFAULT_TIMEOUT_MS` |
+| Packages | lowercase, no underscores | `com.example.myservice.user` |
+
+Specific Guava naming patterns:
+- Static factory: `of(...)`, `from(...)`, `create(...)`, `copyOf(...)`
+- Boolean methods: `is...()`, `has...()`, `can...()`
+- Conversion methods: `toFoo()`, `asFoo()`
+- Utility class suffixes: `Utils` or `s` — Guava uses `Strings`, `Lists`, `Maps`, `MoreObjects`
+- Implementation prefix: `Default`, `Simple`, `Abstract` — never `Impl` as a suffix
+
+---
+
+## PACKAGE STRUCTURE
+
+Organize by feature, not layer. Each feature package owns its full vertical slice.
+
+```
+com.example.myservice/
+  Application.java
+
+  user/
+    User.java                    # domain entity
+    UserService.java             # interface
+    DefaultUserService.java      # implementation (package-private)
+    UserController.java          # REST layer (package-private)
+    UserRepository.java          # data layer
+    CreateUserRequest.java       # request DTO
+    UserResponse.java            # response DTO
+    UserNotFoundException.java   # exception
+
+  common/
+    StringUtils.java             # shared utilities
+    ValidationUtils.java
+
+  config/
+    ClockConfig.java
+    SecurityConfig.java
+```
+
+Not this:
+```
+controllers/
+  UserController.java
+services/
+  UserService.java
+  UserServiceImpl.java
+repositories/
+  UserRepository.java
+models/
+  User.java
+```
+
+---
+
+## WHAT NOT TO DO
+
+These are the most common anti-patterns. Fix them when you see them.
+
+```java
+// 1. ServiceImpl suffix — use Default, Simple, or nothing
+// WRONG
+class UserServiceImpl implements UserService { ... }
+// RIGHT
+final class DefaultUserService implements UserService { ... }
+
+// 2. Field injection — constructor injection always
+// WRONG
+@Service
+class UserService {
+  @Autowired private UserRepository repo;
+}
+// RIGHT
+@Service
+final class DefaultUserService implements UserService {
+  private final UserRepository userRepository;
+  DefaultUserService(UserRepository userRepository) {
+    this.userRepository = checkNotNull(userRepository, "userRepository");
+  }
+}
+
+// 3. Null return from a non-nullable method
+// WRONG
+public User findById(long id) {
+  return userRepository.findById(id).orElse(null); // caller has no idea
+}
+// RIGHT
+public Optional<User> findById(long id) { ... }
+// OR throw a specific exception
+
+// 4. Catching and swallowing exceptions
+// WRONG
+try {
+  return userRepository.findById(id).orElseThrow();
+} catch (Exception e) {
+  return null; // what went wrong? nobody knows
+}
+// RIGHT
+return userRepository.findById(id)
+    .orElseThrow(() -> new UserNotFoundException(id));
+
+// 5. Magic numbers
+// WRONG
+if (name.length() > 100) { ... }
+// RIGHT
+private static final int MAX_NAME_LENGTH = 100;
+checkArgument(name.length() <= MAX_NAME_LENGTH,
+    "name too long (%s chars, max %s): %s",
+    name.length(), MAX_NAME_LENGTH, name);
+
+// 6. Mutable public static state
+// WRONG
+public static List<String> ALLOWED_ROLES = new ArrayList<>();
+// RIGHT
+public static final ImmutableList<String> ALLOWED_ROLES =
+    ImmutableList.of("ADMIN", "USER", "VIEWER");
+
+// 7. Empty catch blocks
+// WRONG
+try {
+  doSomething();
+} catch (IOException e) {
+  // TODO
+}
+// RIGHT — at minimum, log it; usually rethrow or wrap
+try {
+  doSomething();
+} catch (IOException e) {
+  throw new UncheckedIOException("failed to do something", e);
+}
+```
+
+---
+
+## PROCESS
+
+When you receive a file to refactor:
+
+1. **Read the file in full.** Understand what it does before changing anything.
+2. **Identify the class type** (utility, service, controller, DTO, exception) and apply the relevant section above.
+3. **Fix imports first** — static imports, ordering, no wildcards.
+4. **Apply structural rules** — `final`, constructor injection, access modifiers.
+5. **Fix null handling** — add `@Nullable` where appropriate, add `checkNotNull`/`checkArgument` at entry points.
+6. **Write or fix Javadoc** — every public method and class.
+7. **Fix naming** — classes, methods, fields, constants.
+8. **Check immutability** — mutable fields, leaking collection references.
+9. **Review** — read the refactored file aloud mentally. Does it feel like Guava source? Would a senior engineer at Google approve it?
+
+After refactoring, briefly explain the most significant changes made and why.
+
+---
+
+## TESTING
+
+This section is as mandatory as any other. AI-generated tests are often the most wasteful part of a codebase: they test the wrong things, they duplicate what the framework already guarantees, they use mocks where fakes are cleaner, and they give false confidence. The Guava test suite is the reference standard — read `PreconditionsTest`, `StringsTest`, `AbstractServiceTest`, and `ImmutableListTest` to understand what good tests look like.
+
+### THE CORE PRINCIPLE: TEST THE CONTRACT, NOT THE IMPLEMENTATION
+
+A test should read like a sentence from the method's Javadoc. If the Javadoc says "returns the user with the given id, or throws NoSuchElementException if no user exists", then exactly those two behaviors get tests. The test does not care which repository method was called internally, what SQL was run, or how many objects were allocated.
+
+```java
+// WRONG — tests implementation, not behavior
+@Test
+void findById_callsRepositoryFindById() {
+  userService.findById(42L);
+  verify(mockRepository).findById(42L); // who cares? test what comes out
+}
+
+// RIGHT — tests the contract
+@Test
+void findById_returnsUser_whenUserExists() {
+  // ...
+}
+
+@Test
+void findById_throwsNoSuchElementException_whenUserDoesNotExist() {
+  // ...
+}
+```
+
+---
+
+### WHAT TO TEST (and what not to)
+
+**Test these:**
+
+- Every documented success path, with representative inputs
+- Every documented failure path — every `@throws` in the Javadoc gets a test
+- Null inputs for every non-`@Nullable` parameter (they must throw `NullPointerException`)
+- Boundary values: empty string, zero, negative numbers, `Integer.MAX_VALUE`, empty collections
+- That error messages include the bad value (Guava always does this; so should you)
+- Idempotency where the contract promises it
+- State transitions for stateful objects (start → running → stopped, not just the final state)
+
+**Do not write tests for these:**
+
+- **Simple getters and setters with no logic.** `getName()` returning `this.name` is not a test worth writing.
+- **JPA entities / plain data classes.** If the class is just fields with accessors, there is no behavior to test.
+- **Private methods.** If they need testing, test them through the public API. If you can't reach the interesting case through the public API, that is a design problem.
+- **Constructor field assignment alone.** `new User("alice")` having `name == "alice"` is not worth a test unless the constructor validates or transforms.
+- **Spring framework behavior.** Don't test that `@Transactional` commits a transaction, or that `@Valid` triggers Bean Validation. The framework handles this.
+- **Framework-delegated controllers.** A controller method that is literally `return ResponseEntity.ok(service.doThing(id))` does not need a unit test. It needs an integration test covering the full slice.
+- **Anything where the test is longer than the code it tests.** That is a signal you are testing structure, not behavior.
+
+---
+
+### NAMING: THE GUAVA CONVENTION
+
+Guava uses a three-part naming convention. Read `PreconditionsTest` — every method follows it:
+
+```
+test[MethodName]_[scenario]_[expectedOutcome]
+```
+
+Real examples from Guava source:
+- `testCheckArgument_simple_success`
+- `testCheckArgument_simpleMessage_failure`
+- `testCheckArgument_nullMessage_failure`
+- `testCheckNotNull_complexMessage_success`
+- `testPadStart_noPadding`
+- `testPadStart_somePadding`
+- `testPadStart_null`
+- `testNoOpServiceStopIdempotence`
+- `testManualServiceStopWhileStarting`
+
+The name is the specification. If you cannot state the scenario and expected outcome in the method name, the test is probably testing more than one thing.
+
+```java
+// WRONG — tells you nothing
+@Test
+void testFindUser() { ... }
+
+@Test
+void test1() { ... }
+
+@Test
+void shouldWork() { ... }
+
+// RIGHT — Guava style
+@Test
+void testFindById_returnsUser_whenUserExists() { ... }
+
+@Test
+void testFindById_throwsNoSuchElementException_whenUserDoesNotExist() { ... }
+
+@Test
+void testFindById_throwsIllegalArgumentException_whenIdIsZero() { ... }
+
+@Test
+void testCreateUser_throwsIllegalArgumentException_whenNameIsBlank() { ... }
+
+@Test
+void testCreateUser_throwsDuplicateEmailException_whenEmailAlreadyRegistered() { ... }
+```
+
+---
+
+### ASSERTIONS: GOOGLE TRUTH
+
+Use Google Truth everywhere. It produces better failure messages than JUnit `assertEquals` and reads more naturally than Hamcrest.
+
+```java
+import static com.google.common.truth.Truth.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+```
+
+```java
+// For values
+assertThat(result).isEqualTo("expected");
+assertThat(result).isNull();
+assertThat(result).isNotNull();
+assertThat(list).isEmpty();
+assertThat(list).hasSize(3);
+assertThat(list).contains("alice");
+assertThat(list).containsExactly("a", "b", "c").inOrder();
+
+// For booleans
+assertThat(user.isActive()).isTrue();
+assertThat(users).isEmpty();
+
+// isSameInstanceAs vs isEqualTo — Guava is precise about this
+// Use isSameInstanceAs when the contract says the SAME object is returned, not just an equal one
+assertThat(Strings.padStart("x", 1, '-')).isSameInstanceAs("x"); // no-op case returns same ref
+assertThat(Strings.padStart("x", 3, '-')).isEqualTo("--x");       // new string, equality check
+```
+
+### ASSERTING ON EXCEPTIONS
+
+Never use `@Test(expected = ...)`. Capture the exception and assert on its message. The message is part of the contract — Guava always tests it.
+
+```java
+// WRONG — only checks exception type, not message
+@Test(expected = IllegalArgumentException.class)
+void testCreate_nullName() {
+  service.create(null, "email@example.com");
+}
+
+// WRONG — same problem with JUnit 5 style
+@Test
+void testCreate_nullName() {
+  assertThrows(IllegalArgumentException.class,
+      () -> service.create(null, "email@example.com"));
+  // missing: what was the message? was it the right exception for the right reason?
+}
+
+// RIGHT — Guava style: capture the exception, assert on its message
+@Test
+void testCreate_throwsNullPointerException_whenNameIsNull() {
+  final NullPointerException e = assertThrows(NullPointerException.class,
+      () -> service.create(null, "email@example.com"));
+  assertThat(e).hasMessageThat().isEqualTo("name");
+}
+
+@Test
+void testCreate_throwsIllegalArgumentException_whenNameIsBlank() {
+  final IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+      () -> service.create("   ", "email@example.com"));
+  assertThat(e).hasMessageThat().isEqualTo("name must not be blank");
+}
+
+@Test
+void testCreate_throwsIllegalArgumentException_whenNameIsTooLong() {
+  final String longName = "a".repeat(101);
+  final IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+      () -> service.create(longName, "email@example.com"));
+  // message must contain the bad value — this is the Guava standard
+  assertThat(e).hasMessageThat().contains("101");
+}
+```
+
+---
+
+### FAKES OVER MOCKS
+
+Guava's test suite almost never uses Mockito. Instead they write small, real implementations called fakes. This is a better design for two reasons: fakes enforce the interface contract (they implement the real interface), and they test behavior instead of wiring.
+
+Look at how Guava does it — `RecordingListener` in `AbstractServiceTest` is a fake that records state history, not a mock that verifies call counts. `FakeTicker` in `guava-testlib` is a real `Ticker` implementation whose time you can advance.
+
+```java
+// WRONG — mock-heavy test that tests wiring, not behavior
+@Test
+void testFindById_callsRepository() {
+  when(mockRepo.findById(42L)).thenReturn(Optional.of(user));
+  final User result = service.findById(42L);
+  verify(mockRepo).findById(42L); // testing that YOU CALLED THE REPO, not what came back
+  assertThat(result).isEqualTo(user);
+}
+
+// RIGHT — write a fake repository, test real behavior
+// In test package:
+final class FakeUserRepository implements UserRepository {
+
+  private final Map<Long, User> store = new LinkedHashMap<>();
+  private long nextId = 1;
+
+  @Override
+  public Optional<User> findById(long id) {
+    return Optional.ofNullable(store.get(id));
+  }
+
+  @Override
+  public User save(User user) {
+    final User saved = user.withId(nextId++);
+    store.put(saved.id(), saved);
+    return saved;
+  }
+
+  @Override
+  public boolean existsByEmail(String email) {
+    return store.values().stream().anyMatch(u -> u.email().equals(email));
+  }
+}
+
+// Test uses the fake:
+class DefaultUserServiceTest {
+
+  private final FakeUserRepository repository = new FakeUserRepository();
+  private final FakeClock clock = new FakeClock(Instant.parse("2024-01-15T10:00:00Z"));
+  private final DefaultUserService service = new DefaultUserService(repository, clock);
+
+  @Test
+  void testFindById_returnsUser_whenUserExists() {
+    final User saved = repository.save(new User("alice", "alice@example.com"));
+
+    final User result = service.findById(saved.id());
+
+    assertThat(result.name()).isEqualTo("alice");
+    assertThat(result.email()).isEqualTo("alice@example.com");
+  }
+}
+```
+
+When is Mockito appropriate? For dependencies you cannot fake cheaply — external HTTP clients, third-party SDKs with complex setup, or when you are specifically testing error-path behavior that a fake cannot easily produce (e.g., a network timeout).
+
+---
+
+### FAKES FOR TIME
+
+Never inject `Instant.now()` or `LocalDate.now()` directly in production code. Inject a `java.time.Clock`. In tests, use a fixed clock. This is the direct equivalent of Guava's `FakeTicker`.
+
+```java
+// Production code — takes a Clock
+@Service
+final class DefaultOrderService implements OrderService {
+  private final Clock clock;
+
+  DefaultOrderService(OrderRepository orderRepository, Clock clock) {
+    this.orderRepository = checkNotNull(orderRepository, "orderRepository");
+    this.clock = checkNotNull(clock, "clock");
+  }
+
+  @Override
+  public Order create(CreateOrderRequest request) {
+    return Order.builder()
+        .createdAt(Instant.now(clock)) // uses injected clock
+        .build();
+  }
+}
+
+// Test — fixed clock so createdAt is deterministic
+@Test
+void testCreate_setsCreatedAtToCurrentTime() {
+  final Instant now = Instant.parse("2024-06-01T12:00:00Z");
+  final Clock fixedClock = Clock.fixed(now, ZoneOffset.UTC);
+  final DefaultOrderService service = new DefaultOrderService(fakeRepo, fixedClock);
+
+  final Order order = service.create(validRequest);
+
+  assertThat(order.createdAt()).isEqualTo(now);
+}
+```
+
+---
+
+### THE LAZY-EVALUATION ANTI-PATTERN
+
+Guava's `PreconditionsTest` has a specific test for this: the `IGNORE_ME` object that throws `AssertionFailedError` from its `toString()` method. The point is to verify that the error message template is *not* evaluated when the check passes. Apply the same principle: never put expensive computation in test assertions that runs regardless of whether the assertion holds.
+
+---
+
+### UNIT TESTS VS INTEGRATION TESTS
+
+**Unit tests** — no Spring context, no database, no external calls. Fast. Test one class at a time. Use fakes for all collaborators. Run in milliseconds.
+
+```java
+// Unit test — no @SpringBootTest, no @ExtendWith(SpringExtension.class)
+class DefaultUserServiceTest {
+  private final FakeUserRepository repository = new FakeUserRepository();
+  private final DefaultUserService service =
+      new DefaultUserService(repository, Clock.fixed(...));
+
+  @Test
+  void testCreate_persistsUser() { ... }
+}
+```
+
+**Controller slice tests** — test HTTP mapping, request/response serialization, validation annotations, and exception mapping. Use `@WebMvcTest` + `MockMvc`. Mock only the service layer.
+
+```java
+@WebMvcTest(UserController.class)
+class UserControllerTest {
+
+  @Autowired MockMvc mockMvc;
+  @MockBean UserService userService;
+
+  @Test
+  void testFindById_returns200_whenUserExists() throws Exception {
+    when(userService.findById(42L)).thenReturn(validUser());
+
+    mockMvc.perform(get("/api/v1/users/42"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.name").value("alice"))
+        .andExpect(jsonPath("$.email").value("alice@example.com"));
+  }
+
+  @Test
+  void testFindById_returns404_whenUserDoesNotExist() throws Exception {
+    when(userService.findById(99L)).thenThrow(new NoSuchElementException("no user with id: 99"));
+
+    mockMvc.perform(get("/api/v1/users/99"))
+        .andExpect(status().isNotFound());
+  }
+
+  @Test
+  void testCreate_returns400_whenNameIsBlank() throws Exception {
+    mockMvc.perform(post("/api/v1/users")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"name\":\"\",\"email\":\"alice@example.com\"}"))
+        .andExpect(status().isBadRequest());
+  }
+}
+```
+
+**Integration tests** — test the full stack including a real database. Use Testcontainers. Annotate with `@SpringBootTest`. These are slow and few; run them separately from unit tests.
+
+```java
+@SpringBootTest
+@Testcontainers
+@Transactional
+class UserServiceIntegrationTest {
+
+  @Container
+  static final PostgreSQLContainer<?> POSTGRES =
+      new PostgreSQLContainer<>("postgres:16");
+
+  @Autowired UserService userService;
+
+  @Test
+  void testCreate_andRetrieve_roundTrip() {
+    final User created = userService.create(
+        new CreateUserRequest("alice", "alice@example.com"));
+
+    final User found = userService.findById(created.id());
+
+    assertThat(found.name()).isEqualTo("alice");
+    assertThat(found.email()).isEqualTo("alice@example.com");
+  }
+}
+```
+
+---
+
+### TEST CLASS STRUCTURE
+
+Mirror the production class structure. One test class per production class. Package mirrors production package (so the test can access package-private classes).
+
+```
+src/main/java/com/example/user/
+  DefaultUserService.java         ← package-private
+  UserController.java             ← package-private
+
+src/test/java/com/example/user/
+  DefaultUserServiceTest.java     ← same package, can see package-private
+  UserControllerTest.java
+  FakeUserRepository.java         ← shared fake, same package
+```
+
+The test class organization mirrors Guava's: fields first (service under test + its fakes), then test methods grouped by the method being tested, then private helpers at the bottom.
+
+```java
+class DefaultUserServiceTest {
+
+  // --- test doubles ---
+  private final FakeUserRepository repository = new FakeUserRepository();
+  private final Clock clock = Clock.fixed(Instant.parse("2024-01-01T00:00:00Z"), ZoneOffset.UTC);
+
+  // --- subject under test ---
+  private final DefaultUserService service = new DefaultUserService(repository, clock);
+
+  // --- findById tests ---
+
+  @Test
+  void testFindById_returnsUser_whenUserExists() { ... }
+
+  @Test
+  void testFindById_throwsNoSuchElementException_whenUserDoesNotExist() { ... }
+
+  @Test
+  void testFindById_throwsIllegalArgumentException_whenIdIsZero() { ... }
+
+  // --- create tests ---
+
+  @Test
+  void testCreate_persistsUserWithGeneratedId() { ... }
+
+  @Test
+  void testCreate_throwsNullPointerException_whenRequestIsNull() { ... }
+
+  @Test
+  void testCreate_throwsDuplicateEmailException_whenEmailAlreadyExists() { ... }
+
+  // --- private helpers ---
+
+  private static CreateUserRequest validRequest() {
+    return new CreateUserRequest("alice", "alice@example.com");
+  }
+}
+```
+
+---
+
+### THE NULL CONTRACT TEST
+
+Every public non-`@Nullable` parameter must throw `NullPointerException` when passed null. Guava uses `NullPointerTester` to enforce this automatically. Do the same for your utility classes.
+
+```java
+@Test
+void testNullContracts() {
+  new NullPointerTester().testAllPublicStaticMethods(StringUtils.class);
+}
+```
+
+For service classes, write explicit null tests. They are fast and catch regressions:
+
+```java
+@Test
+void testFindById_throwsNullPointerException_whenNullPassedToNonNullableParam() {
+  // checkNotNull in constructor should have already guarded this, but
+  // verify the service itself documents and enforces its null contracts
+  final NullPointerException e = assertThrows(NullPointerException.class,
+      () -> new DefaultUserService(null, clock));
+  assertThat(e).hasMessageThat().isEqualTo("userRepository");
+}
+```
+
+---
+
+### WHAT A GOOD TEST FILE LOOKS LIKE
+
+Count the ratio of assertion lines to setup lines. In a well-written test, assertions dominate. If a single test method has 20 lines of setup and 2 lines of assertion, something is wrong — either the class under test is too hard to construct (constructor injection not used, too many dependencies), or the test is doing too much.
+
+Guava's `StringsTest.testNullToEmpty()` is 3 lines:
+```java
+public void testNullToEmpty() {
+  assertThat(Strings.nullToEmpty(null)).isEqualTo("");
+  assertThat(Strings.nullToEmpty("")).isEqualTo("");
+  assertThat(Strings.nullToEmpty("a")).isEqualTo("a");
+}
+```
+
+That is the goal. If your tests look like that, they are good tests.
+
+---
+
+### TESTING PROCESS
+
+When asked to write or evaluate tests for a class:
+
+1. **Read the production class contract.** Every `@throws`, every `@return`, every null annotation is a test case.
+2. **Identify the class type.** Utility class, service, controller, value type — each has its appropriate test style.
+3. **List the test cases before writing any code.** Name them all. If any name is vague, make it specific before writing the test body.
+4. **Write fakes first** if the class under test has dependencies. Do not reach for Mockito until you have decided a fake is impractical.
+5. **Write the test, not the setup.** The assertion should be obvious. If you are spending more time on setup than assertion, stop and ask whether the class is testable.
+6. **Check coverage by contract, not by line.** Does every documented behavior have a test? Does every `@throws` have a test that checks the exception message?
+7. **Delete any test you cannot justify.** If you cannot say what contract it verifies, it should not exist.
+
+---
+
+## MINIMALISM: WRITING LESS CODE, ON PURPOSE
+
+This is not a style preference. It is the single most important discipline in this skill. AI coding agents produce bloated code because they pattern-match to what they have seen most often, and the most common Java code is verbose. Guava exists precisely as a corrective: the Guava philosophy page states their primary metric as **utility × ubiquity** — a feature earns its existence only when it "represents a substantial improvement on the simplest available workaround." Apply that test to every class, method, and abstraction you write.
+
+**Every line of code is a liability, not an asset.** More code means more maintenance, more surface area for bugs, and more cognitive load for the reader. The goal is always the minimum code that correctly and clearly expresses the intent. If deleting something makes the code easier to read, delete it.
+
+Before writing anything — a class, a method, a variable, an abstraction — ask: **what is the simplest available workaround?** If the gap between the workaround and what you are about to write is not substantial, use the workaround.
+
+---
+
+### THE INLINING TEST
+
+The single most useful exercise. Before extracting any method or creating any class, write the inline version first and read it. If the inline version is clearer than the extracted version, keep it inline. Extraction should always make the call site read more clearly, not less.
+
+```java
+// INLINE VERSION — read this first
+return users.stream()
+    .filter(u -> u.isActive() && u.createdAt().isAfter(cutoff))
+    .sorted(Comparator.comparing(User::name))
+    .collect(toImmutableList());
+
+// AI-extracted version — is this actually clearer?
+private List<User> filterUsers(List<User> users, Instant cutoff) {
+  return getActiveUsersCreatedAfter(users, cutoff);
+}
+private List<User> getActiveUsersCreatedAfter(List<User> users, Instant cutoff) {
+  return sortUsersByName(users.stream()
+      .filter(u -> isActiveAndAfterCutoff(u, cutoff))
+      .collect(toList()));
+}
+private boolean isActiveAndAfterCutoff(User u, Instant cutoff) {
+  return u.isActive() && u.createdAt().isAfter(cutoff);
+}
+private List<User> sortUsersByName(List<User> users) {
+  return users.stream().sorted(Comparator.comparing(User::name)).collect(toImmutableList());
+}
+```
+
+The inline version is better. The extracted version turns one readable expression into four methods that must all be held in mind simultaneously, across four scroll positions. Apply this test ruthlessly.
+
+---
+
+### THE BLOAT CATALOGUE: PATTERNS AND THEIR CURES
+
+These are the patterns AI produces most often. Recognise them and eliminate them.
+
+---
+
+#### 1. Helper methods that wrap a single expression
+
+```java
+// BLOAT — a private method whose entire body is one return statement
+// with no validation, no transformation, no reuse
+private String buildFullName(String first, String last) {
+  return first + " " + last;
+}
+
+// called as:
+return buildFullName(user.firstName(), user.lastName());
+
+// CORRECT — inline it
+return user.firstName() + " " + user.lastName();
+```
+
+A private method earns its existence when:
+- It is called from more than one place, OR
+- It has a name that encodes a business concept that the expression itself does not convey, OR
+- It has validation or non-trivial transformation logic
+
+One return statement with no validation is almost never worth a method.
+
+---
+
+#### 2. Variables that exist for two lines
+
+```java
+// BLOAT — `result` is assigned on one line and returned on the next.
+// It adds a name that doesn't help and a line that doesn't help.
+public User findById(long id) {
+  Optional<User> result = userRepository.findById(id);
+  return result.orElseThrow(() -> new UserNotFoundException(id));
+}
+
+// CORRECT — return the expression directly
+public User findById(long id) {
+  return userRepository.findById(id)
+      .orElseThrow(() -> new UserNotFoundException(id));
+}
+```
+
+A local variable earns its existence when:
+- It is used more than once, OR
+- Its name encodes meaning that the expression does not convey, OR
+- The expression is genuinely complex and the variable name clarifies what it represents
+
+If you find yourself writing `Type x = expr; return x;` — delete the variable.
+
+---
+
+#### 3. Interfaces with one implementation and no stated reason for a second
+
+```java
+// BLOAT — an interface created "just in case" with one implementation
+// that will never have a second, tested against no contract
+public interface UserEmailFormatter {
+  String format(User user);
+}
+
+public class DefaultUserEmailFormatter implements UserEmailFormatter {
+  public String format(User user) {
+    return user.name() + " <" + user.email() + ">";
+  }
+}
+
+// CORRECT — a static method, or even inline
+// If this is called in exactly one place and has no contract that
+// different implementations would satisfy differently, it has no business
+// being an interface.
+
+// As a static utility method (used in multiple places):
+static String formatEmailAddress(User user) {
+  return user.name() + " <" + user.email() + ">";
+}
+
+// Or just inline it at the call site if it's used once
+```
+
+The rule: an interface earns its existence when you have (or clearly expect) multiple implementations that must be interchangeable, or when you need to fake the dependency in tests. "I might need this later" is not a reason. You are not writing a library. Write what the problem requires today.
+
+---
+
+#### 4. Mapper / Converter classes for simple field copying
+
+```java
+// BLOAT — a whole class whose job is "call these getters and those setters"
+@Component
+public class UserMapper {
+  public UserResponse toResponse(User user) {
+    UserResponse response = new UserResponse();
+    response.setId(user.getId());
+    response.setName(user.getName());
+    response.setEmail(user.getEmail());
+    return response;
+  }
+}
+
+// CORRECT — a static factory method on the response class itself
+// This is exactly what Guava does: ImmutableList.copyOf(collection),
+// Optional.fromNullable(ref). The conversion lives on the type being created.
+public record UserResponse(long id, String name, String email) {
+  public static UserResponse from(User user) {
+    checkNotNull(user, "user");
+    return new UserResponse(user.id(), user.name(), user.email());
+  }
+}
+
+// Call site:
+return UserResponse.from(user);
+```
+
+A `Mapper` class earns its existence when you have genuinely complex mapping logic — conditional fields, aggregations, calls to other services — that would overwhelm the response class itself. Flat field copying never qualifies.
+
+---
+
+#### 5. Constants classes / interfaces with a single consumer
+
+```java
+// BLOAT — a class that holds one constant used in one other class
+public final class UserConstants {
+  public static final int MAX_NAME_LENGTH = 100;
+  public static final String DEFAULT_ROLE = "USER";
+  private UserConstants() {}
+}
+
+// Used only in UserService. The constant has one home and one consumer.
+
+// CORRECT — the constant lives in the class that owns the rule
+// This is what Guava does: Preconditions doesn't have a ConstantsForPreconditions class.
+// The constant and the class that enforces it are co-located.
+final class DefaultUserService implements UserService {
+  private static final int MAX_NAME_LENGTH = 100;
+  private static final String DEFAULT_ROLE = "USER";
+  // ...
+}
+```
+
+A constants class earns its existence when the same constants are used across multiple unrelated classes, and centralising them prevents duplication and drift. One class, one consumer: just put the constant where it's used.
+
+---
+
+#### 6. Comments that restate what the code says
+
+```java
+// BLOAT — the comment says exactly what the code says
+// Increment the counter
+counter++;
+
+// Check if user is active
+if (user.isActive()) {
+
+// Create a new ArrayList to hold the results
+List<String> results = new ArrayList<>();
+
+// Return the user's name
+return user.name();
+```
+
+```java
+// CORRECT — no comment. The code is its own documentation.
+// Comments belong on the WHY, not the WHAT.
+counter++;
+
+if (user.isActive()) {
+
+List<String> results = new ArrayList<>();
+
+return user.name();
+```
+
+The only comments worth writing:
+- Explaining **why** something is done a non-obvious way (e.g., "// eager for GWT." in Guava's `Strings.java`)
+- Documenting a known limitation or surprising behaviour
+- A `// TODO` with a specific reason
+- Javadoc on public API (which is specification, not narration)
+
+If the comment would be rendered redundant by renaming the variable or method, rename it instead.
+
+---
+
+#### 7. Defensive null checks on values you just constructed
+
+```java
+// BLOAT — checking for null on a value you created three lines ago
+User user = new User(name, email);
+if (user == null) {          // this can never happen
+  throw new IllegalStateException("user is null");
+}
+return user;
+
+// BLOAT — same thing with Optional.ofNullable on a non-null value
+Optional<String> name = Optional.ofNullable(user.name());
+if (name.isEmpty()) {         // user.name() is annotated @NonNull
+  throw new IllegalStateException("name is null");
+}
+```
+
+Check for null at trust boundaries — the entry points of your public methods, values coming from external systems, anything arriving over the wire. Do not check again on values you already hold by construction. This is exactly Guava's approach: `checkNotNull` at the top of constructors and public methods, then trust the value for the rest of the method.
+
+---
+
+#### 8. Exception wrapping that adds nothing
+
+```java
+// BLOAT — wrapping an exception in a custom exception that carries no extra information
+try {
+  return userRepository.findById(id).orElseThrow();
+} catch (NoSuchElementException e) {
+  throw new UserServiceException("Error finding user", e);
+}
+
+// `UserServiceException` has: a message string, the cause. That's it.
+// The original NoSuchElementException already had a message.
+// This adds a layer and removes specificity.
+
+// CORRECT — either let the exception propagate (if it's the right type)
+return userRepository.findById(id)
+    .orElseThrow(() -> new UserNotFoundException(id));
+
+// OR wrap it in something that adds real information the caller can use
+} catch (DataAccessException e) {
+  throw new DatabaseUnavailableException("failed to load user " + id, e);
+}
+```
+
+Wrapping earns its existence when: the wrapped exception type is meaningless to the caller, or you need to add structured data (like the user ID) that the original exception doesn't have.
+
+---
+
+#### 9. Config / wiring classes that do one thing
+
+```java
+// BLOAT — a @Configuration class whose entire purpose is defining one @Bean
+@Configuration
+public class ClockConfiguration {
+  @Bean
+  public Clock clock() {
+    return Clock.systemUTC();
+  }
+}
+
+// CORRECT — unless you need to vary this by profile or environment,
+// just define the bean inline in your application class or use @Primary
+@SpringBootApplication
+public class Application {
+  @Bean
+  Clock clock() {
+    return Clock.systemUTC();
+  }
+
+  public static void main(String[] args) {
+    SpringApplication.run(Application.class, args);
+  }
+}
+```
+
+A `@Configuration` class earns its existence when it configures something non-trivial — conditional beans, profile-dependent behaviour, third-party library setup. A single `@Bean` that returns `Clock.systemUTC()` does not need its own file.
+
+---
+
+#### 10. Abstract base classes that carry no state or shared logic
+
+```java
+// BLOAT — an abstract class with no fields, no implemented methods,
+// just a way to force subclasses to implement something
+public abstract class BaseUserProcessor {
+  public abstract void process(User user);
+  public abstract String getName();
+}
+
+// CORRECT — that's just an interface
+public interface UserProcessor {
+  void process(User user);
+  String name();
+}
+```
+
+Use `abstract class` only when you have concrete shared state or shared method implementations that belong to the hierarchy. If every method is abstract, you have an interface.
+
+---
+
+### THE GUAVA PROOF: LOOK AT WHAT THEY DON'T HAVE
+
+`Present.java` in Guava is the concrete "value is present" Optional implementation. It has one field, one constructor, and ten methods. Every method body is 1–3 lines. There are no helper methods, no intermediate variables, no extracted sub-operations. The entire file is 90 lines including copyright header and blank lines.
+
+```java
+// Every method in Present.java looks like this:
+@Override
+public boolean isPresent() {
+  return true;
+}
+
+@Override
+public T get() {
+  return reference;
+}
+
+@Override
+public T or(T defaultValue) {
+  checkNotNull(defaultValue, "use Optional.orNull() instead of Optional.or(null)");
+  return reference;
+}
+
+@Override
+public Set<T> asSet() {
+  return singleton(reference);
+}
+```
+
+That is the target. Methods that do their single job in the minimum number of lines. No ceremony.
+
+---
+
+### THE FIVE QUESTIONS BEFORE WRITING ANYTHING
+
+Ask these before writing any new class, method, interface, or abstraction:
+
+**1. Does this already exist?**
+In the JDK, in Guava, in Spring itself? Check before writing. `Objects.requireNonNull`, `Optional.ofNullable`, `Collections.unmodifiableList`, `String.isBlank`, `List.of`, `Map.of` — these already exist. Guava's philosophy page quotes Effective Java item 47 directly: *"Don't reinvent the wheel."*
+
+**2. Can I inline this at the call site?**
+Apply the inlining test. If the inline version at the call site is as readable as the extracted version, inline it.
+
+**3. Is this used in more than one place?**
+If not, it probably should not be extracted. Single-use abstractions are overhead that buys nothing.
+
+**4. Does this encode a real concept, or just a mechanical operation?**
+`UserNotFoundException` encodes a real domain concept. `UserServiceHelper` encodes nothing — it is a dumping ground. If you cannot explain what the class *is* (not what it *does*), it should not exist.
+
+**5. Will deleting this break the caller?**
+If nothing calls it, delete it. If you're unsure, look. AI agents frequently generate utility methods, constants, and helper classes that are never referenced anywhere. Zero-consumer code is zero-value code.
+
+---
+
+### HOW TO READ EXISTING CODE FOR BLOAT
+
+When reviewing code for bloat, look for these signals:
+
+- **Methods shorter than their name.** If `processUserRecord(user)` just calls `user.save()`, the method is longer to say than to inline.
+- **Classes with one field and one method.** Almost always replaceable with a lambda or a static method.
+- **"Manager", "Helper", "Util", "Handler", "Processor" in class names** without obvious structure. These names mean "I didn't know what to call this." If you cannot name it after what it *is*, it may not need to exist.
+- **`impl` in a class name.** Already covered in the main skill: use `Default`, `Simple`, or nothing. But more broadly, `FooImpl` is a signal that someone created `Foo` as an interface just to have an interface, before knowing whether one was needed.
+- **Private methods called from one place, with one line in their body.**
+- **Variables named `temp`, `result`, `data`, `value`** — these names announce "this variable has no meaning."
+- **Empty `catch` blocks, or catches that just log and swallow** — if you don't know what to do with an exception, let it propagate.
+- **`@SuppressWarnings` without a comment explaining why** — usually covering up a smell.
+- **Parallel class hierarchies.** `UserDto`, `UserEntity`, `UserModel`, `UserView`, `UserResource` — five representations of a User. Each translation layer is a maintenance cost. Use the fewest representations the problem genuinely requires.
+
+---
+
+### THE STANDARD TO APPLY CONTINUOUSLY
+
+At the end of writing any block of code, read it aloud. If any line sounds like filler — if removing it would make the meaning clearer rather than less clear — remove it. Guava's source passes this test. `Strings.isNullOrEmpty` is one line. `Optional.fromNullable` is one line. The value is in what they express, not in how much they say.
+
+The discipline is not "write short code." It is "write code where every part earns its place." Those are different things. A complex algorithm can be long and still minimal. A `toString()` override that calls `MoreObjects.toStringHelper` in three chained lines is longer than `return "User{" + name + "}"` but is more minimal because the intent is clearer and the contract (omit nulls, readable format) is enforced automatically. Minimalism means no waste — not necessarily few lines.
