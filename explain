@@ -1,0 +1,6 @@
+How to system design:
+Document Management system
+
+how to use a state machine for this design for the document operations e.g. UPLOADED_IN_STORAGE -> OCR_EXTRACTION -> AI_DOCUMENT_CONTENT_TERMS_EXTRACTION -> COMPLETED/PUBLISHED, allow durability between these events (retry failed, smartly skip previously suceessful ops, almost stripe esque design?
+
+for the operations log, our current approach creates 4 set of operations for each state on each upload. so upload 1 -> 4 States all set as pending, upload 2 (detected same document via hashing the contents of document and storing in db and checking if already exists), we create 4 set of new operations, have logic to see if all previous batch successful operations -> carry that forward with status "SKIPPED_PREVIOUS_SUCESS" and any failed/new operations (e.g. changed config, now want to do different / new ops not done before, or they failed etc) do them again / keep as pending / no success / previous_skip
