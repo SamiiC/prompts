@@ -1,0 +1,2634 @@
+========== BEGIN FILE: skills/mr-description/SKILL.md ==========
+---
+name: mr-description
+description: Writes merge request / pull request descriptions in a fixed engineering-blog voice (consequence-first, numbers, named trade-offs, root-cause storytelling) and renders accompanying dark-card figures. Supports both the original figure styles (request flow, timeline, stepper, or stacked before/after comparison) and continuous, time-seekable simulations with smooth phase navigation. Diffs the current branch against main (or master/develop) to ground every claim. Use whenever the user asks for an MR description, PR description, PR body, merge request write-up, "describe this branch", "write up my changes", "summarize this diff for review", or wants a diagram or figure of what a branch changes, even if they do not say "skill", "diagram", or "MR".
+---
+
+# MR description + figure
+
+Turn the current branch into a merge request description a peer would want to read, plus one or two figures in the same house style. The prose voice and the diagram language are fixed on purpose: they are modeled on a reference engineering post, so every MR the user opens reads like the same author wrote it.
+
+Two reference files carry the detail. Read both before writing:
+- `references/prose-style.md`: the voice, with the moves, header patterns, vocabulary, banned patterns, length targets, and a self-check.
+- `references/diagram-style.md`: how to choose among the original four figure kinds, the JSON spec for each, content and layout rules, and captions.
+
+## Workflow
+
+### 1. Diff against the base
+
+```bash
+bash scripts/collect_diff.sh            # auto-detects origin/HEAD, main, master, develop
+bash scripts/collect_diff.sh main --max-lines 2500
+bash scripts/collect_diff.sh --working-tree   # include uncommitted work
+```
+
+The script prints the branch, merge-base, commits, changed files, diffstat, and the diff (lockfiles and build output excluded, capped by `--max-lines`). It uses the merge-base, so the diff shows only what this branch introduced.
+
+If the output is truncated or a hunk is unclear, read the touched files directly (`git show HEAD:path`, or open the file). Do not describe code you have not read. If the user names a different base, pass it.
+
+### 2. Find the story before writing
+
+Answer these four in a scratch note. They become the skeleton.
+
+1. **Consequence:** who or what feels the problem today? (user, product, on-call, cost)
+2. **Mechanism:** what does the system do, and what does this change do to it?
+3. **Evidence:** which numbers exist? Pull from the diff (timeouts, pool sizes, thresholds, counts), commit messages, test or benchmark output, and the user. List what you do *not* have.
+4. **Trade-off:** what does this cost, and why is that acceptable now?
+
+If the commit log tells an investigation story (symptom, suspicion, test, finding, fix), use it. If the evidence for a number or an incident is missing, either ask the user one short question or leave the claim qualitative. Never invent numbers, incidents, or benchmarks.
+
+### 3. Write the description
+
+Follow `references/prose-style.md` strictly. Skeleton:
+
+```markdown
+# <MR title: sentence case, specific, at most 72 characters, no type prefix>
+
+<Opening: consequence first, then what the system is, then what this change does and its headline result. 2-4 sentences, no header.>
+
+<Optional stat strip, only with two or more real numbers.>
+
+## <Specific header naming what the section is about>
+<Paragraphs in "we" voice. Mechanism, story, numbers.>
+
+![FIGURE 01 · TOPIC: Title](figure-01.png)
+*Figure 01 · <Title>. <By ... takeaway sentence.>*
+
+## <Header for the trade-off or the "why X does less" section>
+<Name the cost, why it is right at this moment, when to revisit.>
+
+## <Header for testing and rollout, if there is something to say>
+<How it was verified, how it ships, what to watch. Short bullets are allowed here for commands or steps.>
+
+<Closing forward pointer if one exists: what follow-up change comes next.>
+```
+
+Scale to the change: a one-file fix gets roughly 150 words and at most one header; an architectural change gets 600-900 words. See the length table in the style guide.
+
+### 4. Build the figures
+
+There are **three rendering modes**: original four figure kinds, continuous flow simulations, and continuous phase-based steppers.
+
+#### A. Original discrete figure kinds
+Use `scripts/render_diagram.py` for the original four kinds:
+
+| Change | Kind | Template |
+|:--|:--|:--|
+| New or rewired components, proxy, split, migration | `flow` | `assets/example-spec.json` |
+| Ordering, blocking, concurrency, retries, queueing delay | `timeline` | `assets/example-timeline.json` |
+| A policy whose effect unfolds over discrete stages | `stepper` | `assets/example-stepper.json` |
+| Resource counts across before/after variants of one flow | `lanes` | `assets/example-lanes.json` |
+
+Render with:
+
+```bash
+python scripts/render_diagram.py figure-01.json --out-dir mr/ --name figure-01 --png
+```
+
+#### B. Continuous simulations
+Use `scripts/render_continuous.py` when the visual should evolve on one continuous clock rather than swapping between panels.
+
+Choose the continuous renderer when any of these are true:
+- phase labels should jump to timestamps within one running animation
+- the explanatory text should change smoothly during playback
+- requests, retries, or acknowledgements should move continuously along authored paths
+- counters, node states, and statuses should evolve over time
+- a discrete stepper would lose important intermediate states
+
+Use `assets/example-continuous.json` as the starting template.
+
+Render with:
+
+```bash
+python scripts/render_continuous.py figure-01.json --out figure-01.html
+```
+
+Continuous diagrams are self-contained HTML files with replay, pause/play, clickable phases, and timeline scrubbing. They do not currently emit PNG directly; if you need a static screenshot for the MR body, open the HTML in a browser and capture the desired frame separately.
+
+#### C. Continuous steppers (smooth stage evolution)
+Use `scripts/render_continuous_stepper.py` when the user wants a connection-pool-style walkthrough whose **phase tabs are timestamps in one running simulation** rather than panel switches. This is distinct from both the legacy `stepper` (discrete stage swaps) and `render_continuous.py` (node/link architecture simulations).
+
+The continuous-stepper renderer preserves a single diagram structure while updating explanatory prose, connection/state snapshots, active loads, packet motion, history, and the phase progress indicator on a single clock. Use `assets/example-continuous-stepper.json` for a generic background-job example; `assets/continuous-stepper-template.html` is the full self-contained HTML/CSS/JS animation template. The example uses illustrative scripted activity; adjust the simulation script or template when the desired mechanism changes, and do not portray illustrative timings as measured.
+
+```bash
+python scripts/render_continuous_stepper.py assets/example-continuous-stepper.json --out figure-01.html
+```
+
+The JSON customises the title, figure label, subtitle, card text, four phases, and timed narrative events. The template also contains the illustrative request, status, and history choreography. This renderer is intentionally separate from the general node-flow renderer, not simply an alias.
+
+### 5. Deliver
+
+Write `description.md` into the same `mr/` folder as the figure files. Then:
+- In claude.ai or Cowork: copy `mr/` to `/mnt/user-data/outputs/` and call `present_files` with `description.md` first, then each figure's `.png`, `.svg`, `.html`.
+- In a local repo: leave `mr/` in the working tree root (add it to `.git/info/exclude` so it is not committed) and print the paths.
+
+In the final message, keep it short: where the files are, the one place where a number was left qualitative because the evidence was missing (if any), and a reminder that the PNG must be attached to the MR by drag-and-drop or upload, after which the markdown image path should be replaced with the uploaded URL. MR UIs cannot read local relative paths, and CLI tools (`glab`, `gh`) do not upload images.
+
+## Rules that matter most
+
+- The voice is the product. If a sentence could appear in a generic changelog, rewrite it with a consequence, a number, or a trade-off.
+- Numbers come from evidence. No evidence, no number.
+- One figure by default, two at most. Real names only. Nine to twelve nodes at most in a single visual group.
+- Reviewers read the diff; the description gives them the reasons. Do not walk the diff file by file.
+- If the user gives a style correction ("shorter", "less dramatic", "more detail on the rollback"), apply it within the voice. Do not drop the voice.
+
+### Animated output
+
+Prefer linking the generated `.html` for interactive diagrams. Use the discrete renderer for stage-based panel changes; use the continuous stepper for smoothly evolving stateful walkthroughs; use the continuous flow renderer for time-driven node-and-edge architectures. PNG is for inline MR images only; HTML is the richer artifact.
+========== END FILE: skills/mr-description/SKILL.md ==========
+
+========== BEGIN FILE: skills/mr-description/references/prose-style.md ==========
+# Prose style: the Habitat voice
+
+This is the voice of the "Rapidly scaling online storage" engineering post, adapted for merge request descriptions. Match it closely. A reader who has read that post should feel the same author wrote this MR.
+
+The voice is a senior engineer explaining a hard-won decision to peers. It is confident without hype, specific without padding, and honest about what the change costs. It is never a changelog.
+
+Example sentences below are written for MR contexts so you can see the moves transplanted. Do not copy them. Reuse the shape, not the words.
+
+## Contents
+1. Voice in one paragraph
+2. The moves (with before/after)
+3. Section headers
+4. Vocabulary
+5. Rhythm and mechanics
+6. Banned patterns
+7. Length
+8. Self-check
+
+---
+
+## 1. Voice in one paragraph
+
+First person plural ("we"), active verbs, plain words. Past tense for what happened (the incident, the investigation, the decision). Present tense for how the system behaves now. Every claim that can carry a number carries one. Trade-offs are named out loud, with what got worse and why that is acceptable *at this particular moment*. Occasional idiom ("squeeze as much juice out of", "buy time", "blast radius") gives it a human pulse, about one per section, never stacked.
+
+## 2. The moves
+
+### 2.1 Open with the consequence, not the mechanism
+Start from what the user, the product, or the on-call engineer experiences. Then narrow to the system. Use the parallel-conditional pair to set stakes when it is true:
+
+> If those requests are slow, the product feels slow. If those requests fail, the product stops working entirely.
+
+MR version:
+- Weak: "Adds retry logic to the payments client."
+- Strong: "Every checkout depends on the payments client returning within a second. When it hangs, the cart hangs. When it fails, the customer sees an error instead of a receipt."
+
+### 2.2 Say what it is, then say what this change does to it
+After the stakes, one short paragraph defines the component in a sentence a new teammate could follow, then states what this MR changes and the headline result. Introduce unfamiliar terms once, with a parenthetical gloss: "Statsig (a tool that manages feature flags, and can be used to run A/B tests)", "(known as a 'thundering herd')".
+
+### 2.3 Put real numbers on everything that can hold one
+Sizes, rates, percentages, counts, latencies, before/after ratios. Use "more than", "over", "almost", "up to" for honest rounding. Compare with ratios ("6x more CPU efficient and 15x more memory efficient").
+
+- Pull numbers from the diff (files, lines, config values, timeouts, pool sizes, thresholds), from commit messages, or from the user.
+- **Never invent a measurement.** If the diff does not contain a benchmark and the user did not give one, state the change qualitatively and say what was or was not measured ("We haven't load-tested this yet; the numbers above come from the unit-level benchmark in `bench_pool.py`"). A missing number is acceptable. A fabricated one is not.
+- Config values count as numbers: "from a 60-second poll with no jitter to a 5-minute poll with ±20% jitter".
+
+### 2.4 Tell the root cause as a short detective story
+When the MR fixes a bug or a performance problem, narrate it in this order, past tense, one beat per sentence or two:
+
+1. What we saw (symptom, with a number if possible)
+2. What we expected instead
+3. What we suspected
+4. How we tested the suspicion
+5. What we found
+6. The fix, and how small or large it turned out to be
+
+Anchor phrases from the source voice: "We discovered this in a chance incident where...", "We suspected X was to blame and tested this suspicion by...", "which indeed limited the degradation and confirmed our investigation direction", "The fix was straightforward once profiling helped us root cause the issue."
+
+If the diff gives no evidence of the investigation, do not fabricate one. Describe the mechanism of the bug and the fix instead, and ask the user for the discovery story if it would add value.
+
+### 2.5 Name the trade-off, then own it
+Every non-trivial design choice gets one sentence stating what it costs, one stating why it is still right, and, when relevant, one stating when to revisit. Source phrasings: "an explicit tradeoff", "we think is the right tradeoff to make at this particular moment", "a strategic incursion of technical debt", "a calculated wager".
+
+- Weak: "This improves performance."
+- Strong: "This adds one network hop to every read, which costs about 2 ms at p50. We think that is the right trade for a single place to enforce access control, and we'll revisit it if the hop shows up in tail latency."
+
+### 2.6 Put the claim in the first sentence, then support it
+Each paragraph is one idea, two to five sentences. The first sentence states the point. The rest give the mechanism, the number, or the consequence. Follow a long, explanatory sentence with a short one that lands the conclusion:
+
+> That bet eventually proved correct.
+
+### 2.7 Contrast what it replaces with what it does
+Use "Instead of X, we...", "Rather than allowing X, Y exposes Z", "By doing X, we get Y". A "By ..." sentence is also the house style for figure subtitles.
+
+### 2.8 Be explicit about limits and next steps
+Say what the change deliberately does not do and why. Close with a forward pointer when one exists: "In a follow-up change, we'll move the remaining callers and delete the old path." Pointers are specific, never vague ("more to come").
+
+### 2.9 Prefer prose to bullets
+The source is almost entirely paragraphs. Use bullets only for genuinely discrete enumerations (rollout steps, test commands, a list of affected services). Never bullet the narrative.
+
+### 2.10 Stat strip
+When there are two or three real, measured, headline numbers, render them as a stat strip directly under the opening, the way the source shows "70M+ requests per second / 1B+ people each week / 500 PB+ data". In Markdown:
+
+```markdown
+| **6x** | **15x** | **95%** |
+|:--|:--|:--|
+| CPU efficiency | memory efficiency | of production traffic migrated |
+```
+
+Skip the strip when there are fewer than two real numbers. Never pad it.
+
+## 3. Section headers
+
+Sentence case. Specific. A noun phrase or a gerund that says what the section is *about*, not what *kind* of section it is. Source examples: "Tracking the asyncio delay", "Balancing loads and managing connection pools", "Avoiding flooding downstream resources", "Why Habitat does less", "Launching a Python service at scale", "Migrate from Python to Rust".
+
+Patterns that work:
+- Gerund: "Reducing tail latency in feature flag refreshes", "Avoiding duplicate webhook deliveries"
+- "Why X does Y": "Why the cache sits behind the router"
+- Imperative-as-title for the core move: "Move retries into the client"
+- Plain noun phrase naming the thing: "Tracking the asyncio delay"
+
+Never use: Overview, Background, Context, Summary, Changes, Details, Implementation, Misc, Notes. Those are labels for kinds of content. The voice names the content.
+
+Use two to five headers for a typical MR. The opening has no header.
+
+## 4. Vocabulary
+
+Use these where they are true. Do not force them. About one idiom per section.
+
+Systems framing: blast radius, single point of control, single chokepoint, fan-out, fan-in, hot path, tail latencies (p99 and higher), latency cliffs, feedback loop, metastable failure, thundering herd, escape hatch, predictable constant-work requests, mission-critical traffic, centrally enforce, steady state, in-flight requests, backward-compatible, decoupling X into Y.
+
+Decision framing: tactical decisions, sequencing, buy time, foundational investments, fending off capacity crunches, calculated wager, strategic incursion of technical debt, at this particular moment, unblocking product developers, prioritize the more immediate challenges.
+
+Colloquial seasoning: squeeze as much juice out of, chance incident, well-acquainted with, throw caution to the wind, swing for, it was finally time to.
+
+Connectives: "As a result,", "In practice,", "Combined, this meant", "Once a ... became ..., ...", "One side effect of ...", "Before X, we ...", "Instead of ...".
+
+## 5. Rhythm and mechanics
+
+- Paragraphs of two to five sentences. Mix lengths. A one-sentence paragraph is allowed for a hinge ("That bet eventually proved correct.").
+- Em dashes are fine, used sparingly, for a single aside per paragraph at most.
+- Parentheticals carry definitions and counts. Do not nest them.
+- Code identifiers, flags, env vars, file paths, and metric names go in backticks.
+- Numbers: digits for anything measured (6x, 20 million), words for small counts in running prose ("two engineers", "three regions"). Use "x" for multipliers (6x). Spell out units on first use, abbreviate after.
+- Past tense for events and decisions, present tense for current behavior, future ("we'll") only for follow-ups.
+- Refer to "this change" or "we", never "this MR" / "this PR" in the prose. "In this change, we..." is fine once.
+- Figure captions: label (`FIGURE 01 · TOPIC`), headline sentence, then one "By ..." takeaway sentence. See `diagram-style.md`.
+
+## 6. Banned patterns
+
+- Emojis, exclamation marks, rhetorical questions.
+- Hype and filler: seamless, game-changing, blazing, cutting-edge, "simply", "just", "basically", "various", "a number of", "several" without a count.
+- Hedging that sounds unsure about your own change: "I think", "hopefully", "might help".
+- Changelog voice: "Added X. Fixed Y. Updated Z." Turn each into a reason plus an effect.
+- "This PR/MR adds...", "In this PR, I...", first-person singular.
+- Bare "improves"/"enhances"/"optimizes" with no number or mechanism.
+- Section headers that name a *kind* of content (see section 3).
+- Bullet lists as the main narrative.
+- Fabricated numbers, incidents, benchmarks, or quotes. Ever.
+
+## 7. Length
+
+Scale with the change, not with the diff's line count.
+
+| Change | Target |
+|:--|:--|
+| Small fix, one file | 120-220 words, no stat strip, one header at most, optional small figure |
+| Typical feature or refactor | 350-600 words, 2-3 headers, one figure |
+| Architectural change | 600-900 words, 3-5 headers, one or two figures, stat strip if numbers exist |
+
+Cut sentences that restate the diff. Reviewers can read the diff. They cannot read your reasons.
+
+## 8. Self-check before finishing
+
+1. Does the first sentence name a consequence someone feels, not a file or function?
+2. Is every number traceable to the diff, a commit, or the user? Remove any that are not.
+3. Is there one explicit trade-off sentence, with a reason it is acceptable now?
+4. Do headers say what the section is about, in sentence case?
+5. Is the narrative in paragraphs, in "we" voice, with no changelog list?
+6. Is there at most one idiom per section, and none stacked?
+7. Does the figure caption follow label, headline, "By ..." takeaway?
+8. Would a peer finishing the source post believe the same author wrote this?
+========== END FILE: skills/mr-description/references/prose-style.md ==========
+
+========== BEGIN FILE: skills/mr-description/references/diagram-style.md ==========
+# Diagram style: the Habitat figures
+
+Every figure is a dark card: mono caps label (`FIGURE 03 · TOPIC`), bold headline, one- or two-sentence takeaway, an optional legend, Replay and Pause buttons, a hairline rule, then the body. Fills are periwinkle blues, outlines are thin white, text is white, mono caps are used for every small label. Request = blue square, response = mint circle (or white ring in `lanes`).
+
+Never hand-draw SVG. Write a JSON spec and run `scripts/render_diagram.py`. The renderer owns the look, so every figure in every MR is identical in style. Each kind has a working 1:1 replica of a source figure in `assets/`: copy the closest one and edit it.
+
+## Contents
+1. Pick the kind
+2. Commands
+3. Shared fields
+4. `flow`: request flow between components
+5. `timeline`: who is doing what, over time
+6. `stepper`: tabbed walkthrough of how state changes
+7. `lanes`: stacked variants of one flow
+8. Content rules (all kinds)
+9. Captions
+10. Checklist
+
+---
+
+## 1. Pick the kind
+
+Decide from what the MR changes, not from what looks fanciest. Use one figure by default and two at most, and the two may be different kinds.
+
+| The MR changes... | Kind | Template | Source figure |
+|:--|:--|:--|:--|
+| Which components talk to which: a new service, a proxy, a router, a split, a migration, new storage | `flow` | `assets/example-spec.json` | Fig 02, "Simplified Habitat request flow" |
+| Ordering, scheduling, blocking, concurrency, locks, retries, timeouts, queueing delay, async vs sync | `timeline` | `assets/example-timeline.json` | Fig 03, "Concurrency is not CPU parallelism" |
+| A policy or algorithm whose effect shows up as state evolving step by step: LIFO vs FIFO, backoff, eviction, load balancing, circuit breaker states, rollout phases | `stepper` | `assets/example-stepper.json` | Fig 04A/04B, "LIFO sends new work back to the slow process" |
+| Resource counts or cost across variants of one flow: connections, threads, pods, shards, before / middle / after of a pooling or multiplexing change | `lanes` | `assets/example-lanes.json` | Fig 05, "The same requests, fewer connections" |
+
+Quick rules:
+- If the sentence you would write under the figure starts "By decoupling / routing / splitting / adding ...", use `flow`.
+- If it is about *waiting*, use `timeline`: lanes show who waits on whom, and a High-vs-Low panel pair makes a cause visible.
+- If it is "X behaves differently when Y happens", use `stepper`: three tabs (setup, mechanism, outcome).
+- If it is "the same traffic, now with N instead of M", use `lanes` with one panel per variant, ordered before, then each improvement.
+- A bug fix often earns a `stepper` (or `timeline`) for the broken behavior and a second `stepper` for the fixed behavior, named `04A` and `04B` the way the source does. A refactor or migration earns one `flow`.
+- Trivial changes (typo, rename, dependency bump) get no figure.
+
+## 2. Commands
+
+```bash
+python scripts/render_diagram.py spec.json --out-dir mr/ --name figure-01 --png
+```
+
+Produces `figure-01.svg` and `figure-01.html` (animated and interactive: Pause/Replay work, stepper tabs are clickable and auto-advance) and, with `--png`, `figure-01.png` (static frame, buttons hidden). Attach the PNG to the MR, since MR UIs do not run animation or scripts in images.
+
+Flags: `--scale 2` (PNG pixel density; the default gives a PNG about 1900 px wide), `--freeze-at SECONDS` (which animation frame the PNG captures), `--step N` (stepper: 1-based step shown in the PNG; default is the last step, the outcome), `--keep-buttons`. PNG output needs Python `playwright` with Chromium. If it is missing, ship the SVG and HTML and say so.
+
+Always open the PNG after rendering and fix clipping, overlaps and crowded rows before delivering. For a stepper, render with `--step 1` and `--step 3` and look at both.
+
+## 3. Shared fields
+
+```json
+{ "kind": "flow|timeline|stepper|lanes",
+  "figure": "01",
+  "topic": "Connection pooling",
+  "title": "Pooled connections spread load evenly",
+  "subtitle": "By returning connections in FIFO order, we keep ...",
+  "legend": [{"shape": "square|circle|ring|dash", "color": "req|res|cpu|net|wait|#hex", "label": "Request"}],
+  "buttons": ["replay", "pause"] }
+```
+
+`figure` may carry a suffix (`"04A"`). `topic` is upper-cased into the label (`FIGURE 01 · CONNECTION POOLING`). Default widths: flow 1940, timeline 1790, stepper 1620, lanes 1176 (the source figures' native sizes). Colors by name: `req` blue `#6f9cf7`, `res` mint `#9be8c6`, `cpu` periwinkle `#8fa9ee`, `net` deep blue `#5b7bd6`, `wait` pale blue `#bcd0f5`. Subtitles wrap automatically; keep them under about 200 characters.
+
+Legend: `flow` gets Request and Response by default. The other kinds get none unless you supply one. For `timeline`, the legend names the segment kinds. Use at most three entries.
+
+## 4. `flow`
+
+Nodes and edges on an absolute canvas. The header ends at y≈333; keep content between y 360 and height minus 40.
+
+```json
+{ "kind": "flow", "buttons": ["pause"], "width": 1940, "height": 920,
+  "groups": [{"id": "svc", "x": 555, "y": 438, "w": 582, "h": 387}],
+  "labels": [{"text": "Client", "x": 243, "y": 565}],
+  "nodes":  [{"id": "a", "label": "api-gateway", "sub": "process 1", "x": 64, "y": 592, "w": 358, "h": 83}],
+  "edges":  [{"from": "a", "to": "b", "fromSide": "r", "toSide": "l", "viaX": 808,
+              "step": 1, "arrows": "both", "particles": true}] }
+```
+
+- `groups`: outlined box around the system the MR owns or changes. `labels`: mono caps captions centered at `x`, 25-35 px above what they name.
+- `nodes`: `label` (sans 20), optional `sub` (mono bold under the label, such as `process 2` or `HTTP/1`). Typical size 186-358 x 83-84. Use equal widths within a column.
+- `edges`: sides are `r l t b` (default `r` to `l`). When the ends differ in y, the route is orthogonal with a vertical segment at `viaX` (or `viaY` for top/bottom). Fan-outs share one `viaX` so they draw a single bus. `via: [[x,y],...]` gives custom routing. `arrows`: `both` (default), `end`, `start`, `none`. `step`: hop order; requests animate 1 to N and responses back N to 1. `particles: false` for config or control-plane links.
+- Layout: left to right. Callers on the left (x≈64), the system we own in the middle inside a group box, external resources on the right (flush to x≈1885, caps label above, no box). Rows align on shared baselines, 102 px apart. At most 3 replicas and 9-12 nodes in total. Edges never cross nodes.
+
+## 5. `timeline`
+
+Panels of lanes over a shared time axis, with a moving scrubber that reveals segments as it passes. Use two panels to contrast a good case and a bad case ("Low CPU work", "High CPU work"). One panel is fine for a single scenario.
+
+```json
+{ "kind": "timeline",
+  "legend": [{"shape":"circle","color":"cpu","label":"CPU request/response processing"},
+             {"shape":"circle","color":"net","label":"Python network read/write"},
+             {"shape":"circle","color":"wait","label":"Wait for Cosmos"}],
+  "axis": {"max": 40, "ticks": [0,10,20,30,40], "label": "Time →"},
+  "panels": [{
+    "title": "High CPU work", "note": "Long Python steps keep ready responses waiting",
+    "status": "Python: request C · CPU request processing",
+    "thread": {"label": "Python thread", "segments": [{"t":0,"d":6,"kind":"cpu","text":"A"}]},
+    "lanes": [{"label": "Request A", "sub": "Ready · blocked", "marker": 12.4,
+               "segments": [{"t":0,"d":6,"kind":"cpu","text":"CPU request"}]}],
+    "footer": "A: response already at the socket, but Python cannot receive it yet." }] }
+```
+
+- Time is in abstract "units": `t` is the start and `d` the duration. Say "illustrative units" in prose. Never invent real milliseconds.
+- Segment `kind`: `cpu` (periwinkle: work on the CPU or the single worker), `net` (deep blue: I/O read/write), `wait` (pale blue, dashed: waiting on something external), `blocked` (dashed outline: ready but cannot run), `plain` (black cell with white text: future or unstarted work). `text` shows in mono caps when it fits.
+- `thread`: the shared-resource row (the thread, the lock, the connection). `lanes`: one per request or task. A gap before the first segment draws a dotted lead-in automatically.
+- `marker`: the time at which something becomes ready (a response arrives). Draws a white diamond and tick on the lane.
+- `status` is one sentence about the frozen frame. `footer` is the panel's takeaway, with a number if there is one ("All requests finished at 11.6 units.").
+- The contrast between two panels is the point. Keep the same lanes and the same axis in both. At most 2 panels and 4 lanes per panel.
+
+## 6. `stepper`
+
+Three tabs walk a policy through initial state, mechanism, and outcome inside a single card.
+
+```json
+{ "kind": "stepper",
+  "card": {"title": "Client process", "note": "B3 = connection 3 to server process B. Each process has three connections."},
+  "steps": [{
+    "tab": "Initial burst", "caption": "An initial burst reaches A, B, and the slower process C.",
+    "pool": {"first": "Returned first", "last": "Returned last", "slots": 9,
+             "filled": [{"text":"B3"},{"text":"A3"},{"text":"B2"},{"text":"A2","hl":true}],
+             "status": "Connections return A2"},
+    "servers": [{"name":"A","count":0,"reqs":0,"arrows":{"down":true,"up":true,"ring":true}},
+                {"name":"C","count":3,"reqs":3,"banner":"Overloaded","arrows":{"down":true,"up":true,"hl":"down"}}],
+    "queue": {"total": 18, "filled": 9} }] }
+```
+
+- `pool`: the ordered queue of pills at the top (any ordered resource: connections, workers, tokens). `filled` pills fill left to right and `hl` outlines one in blue. `first`/`last` rename the end labels. `status` is the centered mono line below.
+- `servers`: two to four columns. `count` is the big number, `reqs` how many request slots are filled (from the bottom), `slots` the slot count (default 3), `banner` a blue status bar ("Overloaded"). `arrows`: `down`/`up` booleans, `hl: "down"|"up"` colors one blue, `ring: true` puts a response ring on the up arrow.
+- `queue`: the dashed strip of pending work; `filled` of `total` boxes are blue.
+- Naming: the "bad" policy is `04A`, the fix is `04B`. Titles state the finding ("LIFO sends new work back to the slow process", "FIFO breaks the connection-reuse feedback loop"). The 04B subtitle names the cost honestly ("FIFO maintains more active connections after a burst, but balances workloads fairly across all servers.").
+- Always exactly three steps, tab names like `Initial burst`, `Reusing connections`, `Outcome`, each with a one-sentence `caption`.
+
+## 7. `lanes`
+
+Stacked panels, each a miniature of the same flow, with a footer count line. Use it to show cost or capacity dropping across variants.
+
+```json
+{ "kind": "lanes", "response_style": "ring",
+  "legend": [{"shape":"square","color":"req","label":"Request"},{"shape":"ring","label":"Response"},{"shape":"dash","label":"Idle keep-alive"}],
+  "panels": [{
+    "title": "Envoy pools HTTP/1 connections",
+    "desc": "One shared pool grows to the fleet's peak: 6 connections.",
+    "mode": "pooled",
+    "headers": [{"text":"Python pods","x":203},{"text":"Shared pool","x":543},{"text":"6 open connections","x":788},{"text":"Storage","x":1047}],
+    "rows": [{"label":"Pod 1","sub":"1 active · peak 3","active":1,"peak":3,"incoming":false}],
+    "mid": {"label":"Envoy","sub":"HTTP/1 → HTTP/1"}, "open": 6,
+    "storage": "Azure Cosmos DB",
+    "footer": "6 busy · 0 idle · 6 concurrent upstream requests" }] }
+```
+
+- `mode`: `direct` (each row owns `peak` lines straight to storage; the first `active` are solid with particles, the rest dashed idle keep-alive), `pooled` (rows feed a `mid` box, which opens `open` lines to storage), `multiplexed` (the `mid` box holds one line carrying `streams` interleaved particles).
+- Rows are the callers (pods, workers, clients), at most 6. `incoming: true` draws a solid lead-in with a request particle. `headers` are mono caps column labels with x centers; copy the x values from the template.
+- Every panel carries the same rows so the eye compares counts. The footer states busy / idle / concurrent counts in the same format in every panel. The numbers must be derivable from the diff or the config; otherwise say "illustrative" in the subtitle.
+- Order panels before, then each step of the improvement. Two or three panels.
+
+## 8. Content rules (all kinds)
+
+1. Real identifiers only: names of services, hosts, config keys, queues, functions, taken from the diff or repo. Do not invent components.
+2. Draw only what the MR is about. Omit auth, metrics and logging unless they are the change.
+3. Numbers on a figure follow the same rule as the prose: derived from the diff, config, tests, or the user, or the figure says "illustrative".
+4. No decorative icons, no extra colors, no gradients. Dark theme only.
+5. One idea per figure. If you need a second idea, make a second figure.
+6. Caps mono is for labels, status and axes; sans is for titles, node names and sentences.
+
+## 9. Captions
+
+- **Label** (automatic): `FIGURE NN · TOPIC`. Number figures in order from 01, and use `04A`/`04B` for a before/after pair.
+- **Title**: a specific, declarative statement of the finding, sentence case, no period. Source examples: "Simplified Habitat request flow", "Concurrency is not CPU parallelism", "LIFO sends new work back to the slow process", "The same requests, fewer connections".
+- **Subtitle**: one or two sentences. For design changes, begin "By ..." and name the benefit ("By decoupling the storage logic into a standalone service, we established a single point of control..."). For explanations, state the mechanism and its consequence in plain declarative sentences.
+- In MR Markdown, put the figure after the paragraph that introduces it, with alt text equal to the label plus title and an italic caption line beneath that restates the title and subtitle in one or two sentences.
+
+## 10. Checklist
+
+1. Kind chosen from the table, not from taste.
+2. Title states a finding; subtitle states a mechanism or a "By ..." benefit.
+3. All labels are real identifiers; any figure numbers are traceable or marked illustrative.
+4. Rendered PNG opened and inspected (every step of a stepper). No clipped text, no edge through a node.
+5. Delivered: PNG for the MR, plus SVG and HTML originals.
+
+## Animation behaviour (renderer v2)
+
+- Use the `.html` output when animation matters. It includes an interactive playback range for seeking. Inline `.svg` also retains the SVG Replay/Pause controls and animation.
+- Flow and lane diagrams animate request/response particles on the paths. Timeline segments reveal in time and the cursor traverses the axis. The playback range seeks the SVG animation clock.
+- Stepper diagrams auto-advance every 3.2 seconds, permit manual tab selection, render moving request and response particles on server arrows, and support replay, pausing, and selecting a step via the HTML range.
+- Motion respects `prefers-reduced-motion` by starting paused. For a static reviewer-facing screenshot, use `--png`, optionally `--step` or `--freeze-at`.
+- The figures are visual reproductions inspired by the article, not extracted source components. Exact animation curves, timings, trajectories, and source artwork have not been established to be pixel-for-pixel identical to OpenAI's site. Don't describe them as verified 1:1 parity.
+========== END FILE: skills/mr-description/references/diagram-style.md ==========
+
+========== BEGIN FILE: skills/mr-description/assets/example-spec.json ==========
+{
+  "figure": "02",
+  "topic": "Habitat service",
+  "title": "Simplified Habitat request flow",
+  "subtitle": "By decoupling the storage logic into a standalone service, we established a single point of control for deployments, observability, and platform enhancements.",
+  "kind": "flow",
+  "buttons": ["pause"],
+  "width": 1940,
+  "height": 920,
+  "groups": [
+    {"id": "openai", "x": 555, "y": 438, "w": 582, "h": 387}
+  ],
+  "labels": [
+    {"text": "Client", "x": 243, "y": 565},
+    {"text": "OpenAI", "x": 846, "y": 406},
+    {"text": "Azure Cosmos DB", "x": 1711, "y": 463}
+  ],
+  "nodes": [
+    {"id": "sdk",   "label": "Habitat client sdk", "x": 64,   "y": 592, "w": 358, "h": 83},
+    {"id": "envoy", "label": "envoy",              "x": 574,  "y": 591, "w": 186, "h": 83},
+    {"id": "p1", "label": "habitat-service", "sub": "process 1", "x": 850, "y": 489, "w": 263, "h": 84},
+    {"id": "p2", "label": "habitat-service", "sub": "process 2", "x": 850, "y": 591, "w": 263, "h": 84},
+    {"id": "p3", "label": "habitat-service", "sub": "process 3", "x": 850, "y": 693, "w": 263, "h": 84},
+    {"id": "henvoy", "label": "habitat-envoy", "x": 1198, "y": 590, "w": 185, "h": 84},
+    {"id": "db0", "label": "habitat-cosmos-db-us0", "x": 1539, "y": 490, "w": 346, "h": 83},
+    {"id": "db1", "label": "habitat-cosmos-db-us1", "x": 1539, "y": 592, "w": 346, "h": 83},
+    {"id": "db2", "label": "habitat-cosmos-db-eu0", "x": 1539, "y": 694, "w": 346, "h": 83}
+  ],
+  "edges": [
+    {"from": "sdk",   "to": "envoy", "step": 1},
+    {"from": "envoy", "to": "p1", "viaX": 808, "step": 2},
+    {"from": "envoy", "to": "p2", "step": 2},
+    {"from": "envoy", "to": "p3", "viaX": 808, "step": 2},
+    {"from": "p1", "to": "henvoy", "fromSide": "r", "toSide": "l", "viaX": 1156, "step": 3},
+    {"from": "p2", "to": "henvoy", "fromSide": "r", "toSide": "l", "step": 3},
+    {"from": "p3", "to": "henvoy", "fromSide": "r", "toSide": "l", "viaX": 1156, "step": 3},
+    {"from": "henvoy", "to": "db0", "viaX": 1494, "step": 4},
+    {"from": "henvoy", "to": "db1", "step": 4},
+    {"from": "henvoy", "to": "db2", "viaX": 1494, "step": 4}
+  ]
+}
+========== END FILE: skills/mr-description/assets/example-spec.json ==========
+
+========== BEGIN FILE: skills/mr-description/assets/example-timeline.json ==========
+{
+ "kind": "timeline",
+ "figure": "03",
+ "topic": "Tracking the asyncio delay",
+ "title": "Concurrency is not CPU parallelism",
+ "subtitle": "Python asyncio allows concurrent request processing, but only a single request executes on the CPU thread at a time. This has high impact on request latencies when there's a lot of CPU work to be done.",
+ "legend": [
+  {
+   "shape": "circle",
+   "color": "cpu",
+   "label": "CPU request/response processing"
+  },
+  {
+   "shape": "circle",
+   "color": "net",
+   "label": "Python network read/write"
+  },
+  {
+   "shape": "circle",
+   "color": "wait",
+   "label": "Wait for Cosmos"
+  }
+ ],
+ "axis": {
+  "max": 40,
+  "ticks": [
+   0,
+   10,
+   20,
+   30,
+   40
+  ],
+  "label": "Time \u2192"
+ },
+ "panels": [
+  {
+   "title": "Low CPU work",
+   "note": "Brief Python steps; I/O waits overlap",
+   "status": "Python: all three requests complete",
+   "thread": {
+    "label": "Python thread",
+    "segments": [
+     {
+      "t": 0,
+      "d": 1,
+      "kind": "cpu",
+      "text": "A"
+     },
+     {
+      "t": 1,
+      "d": 0.4,
+      "kind": "net",
+      "text": ""
+     },
+     {
+      "t": 1.4,
+      "d": 1,
+      "kind": "cpu",
+      "text": "B"
+     },
+     {
+      "t": 2.4,
+      "d": 0.4,
+      "kind": "net",
+      "text": ""
+     },
+     {
+      "t": 2.8,
+      "d": 1,
+      "kind": "cpu",
+      "text": "C"
+     },
+     {
+      "t": 3.8,
+      "d": 0.4,
+      "kind": "net",
+      "text": ""
+     },
+     {
+      "t": 7.4,
+      "d": 0.4,
+      "kind": "net",
+      "text": ""
+     },
+     {
+      "t": 7.8,
+      "d": 1,
+      "kind": "cpu",
+      "text": "A"
+     },
+     {
+      "t": 8.8,
+      "d": 0.4,
+      "kind": "net",
+      "text": ""
+     },
+     {
+      "t": 9.2,
+      "d": 1,
+      "kind": "cpu",
+      "text": "B"
+     },
+     {
+      "t": 10.2,
+      "d": 0.4,
+      "kind": "net",
+      "text": ""
+     },
+     {
+      "t": 10.6,
+      "d": 1,
+      "kind": "cpu",
+      "text": "C"
+     }
+    ]
+   },
+   "lanes": [
+    {
+     "label": "Request A",
+     "sub": "Complete",
+     "marker": 7.4,
+     "segments": [
+      {
+       "t": 0,
+       "d": 1,
+       "kind": "cpu",
+       "text": ""
+      },
+      {
+       "t": 1,
+       "d": 0.4,
+       "kind": "net",
+       "text": ""
+      },
+      {
+       "t": 1.4,
+       "d": 6,
+       "kind": "wait",
+       "text": "Cosmos"
+      },
+      {
+       "t": 7.4,
+       "d": 0.4,
+       "kind": "net",
+       "text": ""
+      },
+      {
+       "t": 7.8,
+       "d": 1,
+       "kind": "cpu",
+       "text": ""
+      }
+     ]
+    },
+    {
+     "label": "Request B",
+     "sub": "Complete",
+     "marker": 8.8,
+     "segments": [
+      {
+       "t": 1.4,
+       "d": 1,
+       "kind": "cpu",
+       "text": ""
+      },
+      {
+       "t": 2.4,
+       "d": 0.4,
+       "kind": "net",
+       "text": ""
+      },
+      {
+       "t": 2.8,
+       "d": 6,
+       "kind": "wait",
+       "text": "Cosmos"
+      },
+      {
+       "t": 8.8,
+       "d": 0.4,
+       "kind": "net",
+       "text": ""
+      },
+      {
+       "t": 9.2,
+       "d": 1,
+       "kind": "cpu",
+       "text": ""
+      }
+     ]
+    },
+    {
+     "label": "Request C",
+     "sub": "Complete",
+     "marker": 10.2,
+     "segments": [
+      {
+       "t": 2.8,
+       "d": 1,
+       "kind": "cpu",
+       "text": ""
+      },
+      {
+       "t": 3.8,
+       "d": 0.4,
+       "kind": "net",
+       "text": ""
+      },
+      {
+       "t": 4.2,
+       "d": 6,
+       "kind": "wait",
+       "text": "Cosmos"
+      },
+      {
+       "t": 10.2,
+       "d": 0.4,
+       "kind": "net",
+       "text": ""
+      },
+      {
+       "t": 10.6,
+       "d": 1,
+       "kind": "cpu",
+       "text": ""
+      }
+     ]
+    }
+   ],
+   "footer": "All requests finished at 11.6 units."
+  },
+  {
+   "title": "High CPU work",
+   "note": "Long Python steps keep ready responses waiting",
+   "status": "Python: request C \u00b7 CPU request processing",
+   "thread": {
+    "label": "Python thread",
+    "segments": [
+     {
+      "t": 0,
+      "d": 6,
+      "kind": "cpu",
+      "text": "A"
+     },
+     {
+      "t": 6,
+      "d": 0.4,
+      "kind": "net",
+      "text": ""
+     },
+     {
+      "t": 6.4,
+      "d": 6,
+      "kind": "cpu",
+      "text": "B"
+     },
+     {
+      "t": 12.4,
+      "d": 0.4,
+      "kind": "net",
+      "text": ""
+     },
+     {
+      "t": 12.8,
+      "d": 6,
+      "kind": "cpu",
+      "text": "C"
+     },
+     {
+      "t": 18.8,
+      "d": 0.4,
+      "kind": "net",
+      "text": ""
+     },
+     {
+      "t": 19.2,
+      "d": 0.4,
+      "kind": "plain",
+      "text": ""
+     },
+     {
+      "t": 19.6,
+      "d": 6,
+      "kind": "plain",
+      "text": "A"
+     },
+     {
+      "t": 25.6,
+      "d": 0.4,
+      "kind": "plain",
+      "text": ""
+     },
+     {
+      "t": 26,
+      "d": 6,
+      "kind": "plain",
+      "text": "B"
+     },
+     {
+      "t": 32,
+      "d": 0.4,
+      "kind": "plain",
+      "text": ""
+     },
+     {
+      "t": 32.4,
+      "d": 6,
+      "kind": "plain",
+      "text": "C"
+     },
+     {
+      "t": 38.4,
+      "d": 1.6,
+      "kind": "plain",
+      "text": ""
+     }
+    ]
+   },
+   "lanes": [
+    {
+     "label": "Request A",
+     "sub": "Ready \u00b7 blocked",
+     "marker": 12.4,
+     "segments": [
+      {
+       "t": 0,
+       "d": 6,
+       "kind": "cpu",
+       "text": "CPU request"
+      },
+      {
+       "t": 6,
+       "d": 0.4,
+       "kind": "net",
+       "text": ""
+      },
+      {
+       "t": 6.4,
+       "d": 6,
+       "kind": "wait",
+       "text": "Cosmos"
+      },
+      {
+       "t": 12.4,
+       "d": 6.8,
+       "kind": "blocked",
+       "text": "Ready \u00b7 blocked"
+      },
+      {
+       "t": 19.6,
+       "d": 6,
+       "kind": "plain",
+       "text": "CPU response"
+      }
+     ]
+    },
+    {
+     "label": "Request B",
+     "sub": "Waiting for Cosmos response",
+     "marker": 18.8,
+     "segments": [
+      {
+       "t": 6.4,
+       "d": 6,
+       "kind": "cpu",
+       "text": "CPU request"
+      },
+      {
+       "t": 12.4,
+       "d": 0.4,
+       "kind": "net",
+       "text": ""
+      },
+      {
+       "t": 12.8,
+       "d": 6,
+       "kind": "wait",
+       "text": "Cosmos"
+      },
+      {
+       "t": 18.8,
+       "d": 6.8,
+       "kind": "blocked",
+       "text": "Ready \u00b7 blocked"
+      },
+      {
+       "t": 26,
+       "d": 6,
+       "kind": "plain",
+       "text": "CPU response"
+      }
+     ]
+    },
+    {
+     "label": "Request C",
+     "sub": "CPU request",
+     "marker": 25.2,
+     "segments": [
+      {
+       "t": 12.8,
+       "d": 6,
+       "kind": "cpu",
+       "text": "CPU request"
+      },
+      {
+       "t": 19.2,
+       "d": 6.4,
+       "kind": "plain",
+       "text": "Cosmos"
+      },
+      {
+       "t": 25.6,
+       "d": 6.4,
+       "kind": "blocked",
+       "text": "Ready \u00b7 blocked"
+      },
+      {
+       "t": 32.4,
+       "d": 6,
+       "kind": "plain",
+       "text": "CPU response"
+      }
+     ]
+    }
+   ],
+   "footer": "A: response already at the socket, but Python cannot receive it yet."
+  }
+ ]
+}
+========== END FILE: skills/mr-description/assets/example-timeline.json ==========
+
+========== BEGIN FILE: skills/mr-description/assets/example-stepper.json ==========
+{
+ "kind": "stepper",
+ "figure": "04A",
+ "topic": "Client-side connection pooling",
+ "title": "LIFO sends new work back to the slow process",
+ "subtitle": "After a burst of requests, slower servers return connections to pool last. LIFO encourages more work to concentrate on those same slower servers.",
+ "card": {
+  "title": "Client process",
+  "note": "B3 = connection 3 to server process B. Each process has three connections; only available connections are shown."
+ },
+ "steps": [
+  {
+   "tab": "Initial burst",
+   "caption": "An initial burst reaches A, B, and the slower process C.",
+   "pool": {
+    "filled": [
+     {
+      "text": "B3"
+     },
+     {
+      "text": "A3"
+     },
+     {
+      "text": "B2"
+     },
+     {
+      "text": "A2",
+      "hl": true
+     }
+    ],
+    "status": "Connections return A2"
+   },
+   "servers": [
+    {
+     "name": "A",
+     "count": 0,
+     "reqs": 0,
+     "arrows": {
+      "down": true,
+      "up": true,
+      "ring": true
+     }
+    },
+    {
+     "name": "B",
+     "count": 0,
+     "reqs": 0,
+     "arrows": {
+      "down": true,
+      "up": true,
+      "ring": true,
+      "hl": "up"
+     }
+    },
+    {
+     "name": "C",
+     "count": 3,
+     "reqs": 3,
+     "banner": "Overloaded"
+    }
+   ],
+   "queue": {
+    "total": 18,
+    "filled": 0
+   }
+  },
+  {
+   "tab": "Reusing connections",
+   "caption": "New requests take the most recently returned connection. C returns last, so C is picked first.",
+   "pool": {
+    "filled": [
+     {
+      "text": "B3"
+     },
+     {
+      "text": "A3"
+     },
+     {
+      "text": "B2"
+     },
+     {
+      "text": "A2"
+     },
+     {
+      "text": "C1"
+     },
+     {
+      "text": "C2"
+     },
+     {
+      "text": "C3",
+      "hl": true
+     }
+    ],
+    "status": "Next connection: C3"
+   },
+   "servers": [
+    {
+     "name": "A",
+     "count": 0,
+     "reqs": 0,
+     "arrows": {
+      "down": false,
+      "up": true
+     }
+    },
+    {
+     "name": "B",
+     "count": 0,
+     "reqs": 0,
+     "arrows": {
+      "down": false,
+      "up": true
+     }
+    },
+    {
+     "name": "C",
+     "count": 3,
+     "reqs": 3,
+     "banner": "Overloaded",
+     "arrows": {
+      "down": true,
+      "up": true,
+      "hl": "down"
+     }
+    }
+   ],
+   "queue": {
+    "total": 18,
+    "filled": 9
+   }
+  },
+  {
+   "tab": "Outcome",
+   "caption": "The slow process keeps collecting work while A and B sit idle.",
+   "pool": {
+    "filled": [
+     {
+      "text": "B3"
+     },
+     {
+      "text": "A3"
+     },
+     {
+      "text": "B2"
+     },
+     {
+      "text": "A2"
+     },
+     {
+      "text": "C1"
+     },
+     {
+      "text": "C2"
+     },
+     {
+      "text": "C3"
+     }
+    ],
+    "status": "Connections return \u2014"
+   },
+   "servers": [
+    {
+     "name": "A",
+     "count": 0,
+     "reqs": 0
+    },
+    {
+     "name": "B",
+     "count": 0,
+     "reqs": 0
+    },
+    {
+     "name": "C",
+     "count": 3,
+     "reqs": 3,
+     "banner": "Overloaded"
+    }
+   ],
+   "queue": {
+    "total": 18,
+    "filled": 18
+   }
+  }
+ ]
+}
+========== END FILE: skills/mr-description/assets/example-stepper.json ==========
+
+========== BEGIN FILE: skills/mr-description/assets/example-lanes.json ==========
+{
+ "kind": "lanes",
+ "figure": "05",
+ "topic": "Connection fan-in",
+ "title": "The same requests, fewer connections",
+ "subtitle": "Connection pooling and HTTP/2 connection multiplexing help reduce connection load on downstreams.",
+ "legend": [
+  {
+   "shape": "square",
+   "color": "req",
+   "label": "Request"
+  },
+  {
+   "shape": "ring",
+   "color": "res",
+   "label": "Response"
+  },
+  {
+   "shape": "dash",
+   "label": "Idle keep-alive"
+  }
+ ],
+ "response_style": "ring",
+ "panels": [
+  {
+   "title": "Direct from Python",
+   "desc": "Separate pools keep each pod's peak. After all 6 pods peak at 3 requests: 18 connections stay open, but only 6 are busy.",
+   "mode": "direct",
+   "headers": [
+    {
+     "text": "Requests \u2192",
+     "x": 95
+    },
+    {
+     "text": "Python pods",
+     "x": 203
+    },
+    {
+     "text": "18 open connections",
+     "x": 617
+    },
+    {
+     "text": "Storage",
+     "x": 1047
+    }
+   ],
+   "rows": [
+    {
+     "label": "Pod 1",
+     "sub": "0 active \u00b7 peak 3",
+     "active": 0,
+     "peak": 3,
+     "incoming": false
+    },
+    {
+     "label": "Pod 2",
+     "sub": "3 active \u00b7 peak 3",
+     "active": 3,
+     "peak": 3,
+     "incoming": false
+    },
+    {
+     "label": "Pod 3",
+     "sub": "0 active \u00b7 peak 3",
+     "active": 0,
+     "peak": 3,
+     "incoming": false
+    },
+    {
+     "label": "Pod 4",
+     "sub": "3 active \u00b7 peak 3",
+     "active": 3,
+     "peak": 3,
+     "incoming": false
+    },
+    {
+     "label": "Pod 5",
+     "sub": "0 active \u00b7 peak 3",
+     "active": 0,
+     "peak": 3,
+     "incoming": false
+    },
+    {
+     "label": "Pod 6",
+     "sub": "0 active \u00b7 peak 3",
+     "active": 0,
+     "peak": 3,
+     "incoming": true
+    }
+   ],
+   "footer": "6 busy \u00b7 12 idle \u00b7 6 concurrent upstream requests"
+  },
+  {
+   "title": "Envoy pools HTTP/1 connections",
+   "desc": "One shared pool grows to the fleet's peak: 6 connections. Steady traffic reuses each connection as soon as its response returns.",
+   "mode": "pooled",
+   "headers": [
+    {
+     "text": "Requests \u2192",
+     "x": 95
+    },
+    {
+     "text": "Python pods",
+     "x": 203
+    },
+    {
+     "text": "Local traffic",
+     "x": 372
+    },
+    {
+     "text": "Shared pool",
+     "x": 543
+    },
+    {
+     "text": "6 open connections",
+     "x": 788
+    },
+    {
+     "text": "Storage",
+     "x": 1047
+    }
+   ],
+   "rows": [
+    {
+     "label": "Pod 1",
+     "sub": "1 active \u00b7 peak 3",
+     "active": 1,
+     "peak": 3,
+     "incoming": false
+    },
+    {
+     "label": "Pod 2",
+     "sub": "2 active \u00b7 peak 3",
+     "active": 2,
+     "peak": 3,
+     "incoming": false
+    },
+    {
+     "label": "Pod 3",
+     "sub": "0 active \u00b7 peak 3",
+     "active": 0,
+     "peak": 3,
+     "incoming": false
+    },
+    {
+     "label": "Pod 4",
+     "sub": "3 active \u00b7 peak 3",
+     "active": 3,
+     "peak": 3,
+     "incoming": false
+    },
+    {
+     "label": "Pod 5",
+     "sub": "0 active \u00b7 peak 3",
+     "active": 0,
+     "peak": 3,
+     "incoming": false
+    },
+    {
+     "label": "Pod 6",
+     "sub": "0 active \u00b7 peak 3",
+     "active": 0,
+     "peak": 3,
+     "incoming": true
+    }
+   ],
+   "mid": {
+    "label": "Envoy",
+    "sub": "HTTP/1 \u2192 HTTP/1"
+   },
+   "open": 6,
+   "footer": "6 busy \u00b7 0 idle \u00b7 6 concurrent upstream requests"
+  },
+  {
+   "title": "Envoy upgrades to HTTP/2",
+   "desc": "At steady load, the same 6 requests share 1 retained HTTP/2 connection, each on its own concurrent stream.",
+   "mode": "multiplexed",
+   "headers": [
+    {
+     "text": "Requests \u2192",
+     "x": 95
+    },
+    {
+     "text": "Python pods",
+     "x": 203
+    },
+    {
+     "text": "Local traffic",
+     "x": 372
+    },
+    {
+     "text": "Shared pool",
+     "x": 543
+    },
+    {
+     "text": "1 open connection",
+     "x": 793
+    },
+    {
+     "text": "Storage",
+     "x": 1047
+    }
+   ],
+   "rows": [
+    {
+     "label": "Pod 1",
+     "sub": "1 active \u00b7 peak 3",
+     "active": 1,
+     "peak": 3,
+     "incoming": false
+    },
+    {
+     "label": "Pod 2",
+     "sub": "2 active \u00b7 peak 3",
+     "active": 2,
+     "peak": 3,
+     "incoming": false
+    },
+    {
+     "label": "Pod 3",
+     "sub": "0 active \u00b7 peak 3",
+     "active": 0,
+     "peak": 3,
+     "incoming": false
+    },
+    {
+     "label": "Pod 4",
+     "sub": "3 active \u00b7 peak 3",
+     "active": 3,
+     "peak": 3,
+     "incoming": false
+    },
+    {
+     "label": "Pod 5",
+     "sub": "0 active \u00b7 peak 3",
+     "active": 0,
+     "peak": 3,
+     "incoming": false
+    },
+    {
+     "label": "Pod 6",
+     "sub": "0 active \u00b7 peak 3",
+     "active": 0,
+     "peak": 3,
+     "incoming": true
+    }
+   ],
+   "mid": {
+    "label": "Envoy",
+    "sub": "HTTP/1 \u2192 HTTP/2"
+   },
+   "streams": 6,
+   "footer": "1 busy \u00b7 0 idle \u00b7 6 concurrent upstream requests"
+  }
+ ]
+}
+========== END FILE: skills/mr-description/assets/example-lanes.json ==========
+
+========== BEGIN FILE: skills/mr-description/assets/example-continuous.json ==========
+{
+  "figure": "FIGURE 05",
+  "topic": "BACKGROUND JOBS",
+  "title": "A failed background job can retry without another submission",
+  "subtitle": "The queue separates request acceptance from processing. A transient processor failure leads to backoff and a second attempt.",
+  "width": 1280,
+  "height": 620,
+  "duration": 18,
+  "phases": [
+    {
+      "at": 0,
+      "label": "Submit job"
+    },
+    {
+      "at": 4,
+      "label": "First attempt"
+    },
+    {
+      "at": 8,
+      "label": "Retry"
+    },
+    {
+      "at": 13,
+      "label": "Complete"
+    }
+  ],
+  "narratives": [
+    {
+      "at": 0,
+      "text": "A client submits a job to the API."
+    },
+    {
+      "at": 2,
+      "text": "The API places the job on a queue and acknowledges acceptance."
+    },
+    {
+      "at": 4.5,
+      "text": "A worker picks up the job and calls the processor."
+    },
+    {
+      "at": 7,
+      "text": "The processor reports a transient error."
+    },
+    {
+      "at": 9,
+      "text": "After a delay, the failed job is returned to the queue."
+    },
+    {
+      "at": 11,
+      "text": "A worker tries the same job again."
+    },
+    {
+      "at": 14,
+      "text": "The processor succeeds; the result is stored."
+    },
+    {
+      "at": 16,
+      "text": "The client can retrieve the completed result."
+    }
+  ],
+  "groups": [
+    {
+      "x": 25,
+      "y": 40,
+      "w": 380,
+      "h": 520,
+      "label": "REQUEST PATH"
+    },
+    {
+      "x": 430,
+      "y": 40,
+      "w": 500,
+      "h": 520,
+      "label": "ASYNCHRONOUS WORK"
+    },
+    {
+      "x": 955,
+      "y": 40,
+      "w": 300,
+      "h": 520,
+      "label": "OUTPUT"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "client",
+      "label": "Client",
+      "sub": "submit / poll",
+      "x": 65,
+      "y": 180,
+      "w": 285,
+      "h": 86
+    },
+    {
+      "id": "api",
+      "label": "API",
+      "sub": "accept job",
+      "x": 65,
+      "y": 360,
+      "w": 285,
+      "h": 86
+    },
+    {
+      "id": "queue",
+      "label": "Job queue",
+      "sub": "pending tasks",
+      "x": 465,
+      "y": 180,
+      "w": 210,
+      "h": 86
+    },
+    {
+      "id": "worker",
+      "label": "Worker",
+      "sub": "claim + retry",
+      "x": 695,
+      "y": 360,
+      "w": 205,
+      "h": 86
+    },
+    {
+      "id": "processor",
+      "label": "Processor",
+      "sub": "may fail transiently",
+      "x": 990,
+      "y": 180,
+      "w": 225,
+      "h": 86
+    },
+    {
+      "id": "result",
+      "label": "Result store",
+      "sub": "completed output",
+      "x": 990,
+      "y": 360,
+      "w": 225,
+      "h": 86
+    }
+  ],
+  "routes": {
+    "submit": {
+      "d": "M207 266 L207 360",
+      "label": "SUBMIT",
+      "labelX": 220,
+      "labelY": 320
+    },
+    "enqueue": {
+      "d": "M350 387 L390 387 L390 223 L465 223",
+      "label": "ENQUEUE",
+      "labelX": 395,
+      "labelY": 215
+    },
+    "ack": {
+      "d": "M120 360 L120 266",
+      "label": "ACCEPTED",
+      "labelX": 45,
+      "labelY": 323
+    },
+    "dispatch": {
+      "d": "M675 223 L797 223 L797 360",
+      "label": "CLAIM",
+      "labelX": 705,
+      "labelY": 210
+    },
+    "process": {
+      "d": "M900 387 L942 387 L942 223 L990 223",
+      "label": "EXECUTE",
+      "labelX": 949,
+      "labelY": 207
+    },
+    "failure": {
+      "d": "M1100 266 L1100 305 L915 305 L915 405 L900 405",
+      "class": "failure",
+      "label": "ERROR",
+      "labelX": 1050,
+      "labelY": 293
+    },
+    "retry": {
+      "d": "M695 417 L650 417 L650 292 L570 292 L570 266",
+      "class": "retry",
+      "label": "REQUEUE",
+      "labelX": 575,
+      "labelY": 325
+    },
+    "success": {
+      "d": "M1100 266 L1100 360",
+      "label": "STORE",
+      "labelX": 1110,
+      "labelY": 325
+    },
+    "lookup": {
+      "d": "M990 405 L950 405 L950 520 L390 520 L390 417 L350 417",
+      "label": "RESULT",
+      "labelX": 670,
+      "labelY": 511
+    }
+  },
+  "states": [
+    {
+      "at": 1,
+      "id": "api",
+      "text": "ACCEPTING",
+      "style": "active"
+    },
+    {
+      "at": 2,
+      "id": "queue",
+      "text": "PENDING",
+      "style": "active"
+    },
+    {
+      "at": 3,
+      "id": "api",
+      "text": "ACCEPTED",
+      "style": "complete"
+    },
+    {
+      "at": 5,
+      "id": "worker",
+      "text": "ATTEMPT 1",
+      "style": "active"
+    },
+    {
+      "at": 7,
+      "id": "processor",
+      "text": "TRANSIENT ERROR",
+      "style": "failed"
+    },
+    {
+      "at": 8.3,
+      "id": "worker",
+      "text": "BACKOFF",
+      "style": "active"
+    },
+    {
+      "at": 10,
+      "id": "queue",
+      "text": "REQUEUED",
+      "style": "active"
+    },
+    {
+      "at": 11.5,
+      "id": "worker",
+      "text": "ATTEMPT 2",
+      "style": "active"
+    },
+    {
+      "at": 13.7,
+      "id": "processor",
+      "text": "COMPLETE",
+      "style": "complete"
+    },
+    {
+      "at": 14.5,
+      "id": "result",
+      "text": "STORED",
+      "style": "complete"
+    },
+    {
+      "at": 16,
+      "id": "client",
+      "text": "RESULT READY",
+      "style": "complete"
+    }
+  ],
+  "packets": [
+    {
+      "route": "submit",
+      "at": 0.4,
+      "duration": 0.7,
+      "kind": "request"
+    },
+    {
+      "route": "enqueue",
+      "at": 1.4,
+      "duration": 1,
+      "kind": "request"
+    },
+    {
+      "route": "ack",
+      "at": 2.4,
+      "duration": 0.65,
+      "kind": "success"
+    },
+    {
+      "route": "dispatch",
+      "at": 3.8,
+      "duration": 1.3,
+      "kind": "request"
+    },
+    {
+      "route": "process",
+      "at": 5.3,
+      "duration": 1,
+      "kind": "request"
+    },
+    {
+      "route": "failure",
+      "at": 7,
+      "duration": 1.1,
+      "kind": "failure"
+    },
+    {
+      "route": "retry",
+      "at": 8.7,
+      "duration": 1.1,
+      "kind": "retry"
+    },
+    {
+      "route": "dispatch",
+      "at": 10.4,
+      "duration": 1.1,
+      "kind": "retry"
+    },
+    {
+      "route": "process",
+      "at": 12,
+      "duration": 1,
+      "kind": "request"
+    },
+    {
+      "route": "success",
+      "at": 13.7,
+      "duration": 0.8,
+      "kind": "success"
+    },
+    {
+      "route": "lookup",
+      "at": 15,
+      "duration": 1.3,
+      "kind": "success"
+    }
+  ]
+}
+========== END FILE: skills/mr-description/assets/example-continuous.json ==========
+
+========== BEGIN FILE: skills/mr-description/scripts/collect_diff.sh ==========
+#!/usr/bin/env bash
+# Collect everything needed to describe the current branch against its base.
+# Usage: collect_diff.sh [base-branch] [--max-lines N] [--working-tree]
+#   base-branch      defaults to origin/HEAD, then main, master, develop (first that exists)
+#   --max-lines N    cap on full-diff lines printed (default 1500)
+#   --working-tree   also include uncommitted + staged changes
+set -euo pipefail
+
+BASE=""
+MAX_LINES=1500
+WORKTREE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --max-lines) MAX_LINES="$2"; shift 2 ;;
+    --working-tree) WORKTREE=1; shift ;;
+    *) BASE="$1"; shift ;;
+  esac
+done
+
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "not a git repo" >&2; exit 1; }
+
+if [[ -z "$BASE" ]]; then
+  ORIGIN_HEAD=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  for cand in "$ORIGIN_HEAD" main master develop origin/main origin/master; do
+    if [[ -n "$cand" ]] && git rev-parse --verify --quiet "$cand" >/dev/null; then
+      BASE="$cand"; break
+    fi
+  done
+fi
+[[ -n "$BASE" ]] || { echo "could not find a base branch; pass one explicitly" >&2; exit 1; }
+
+HEAD_REF=$(git rev-parse --abbrev-ref HEAD)
+MERGE_BASE=$(git merge-base "$BASE" HEAD)
+
+# Noise that never helps a human reviewer understand intent.
+EXCLUDES=(':(exclude)*.lock' ':(exclude)package-lock.json' ':(exclude)yarn.lock'
+          ':(exclude)pnpm-lock.yaml' ':(exclude)poetry.lock' ':(exclude)Cargo.lock'
+          ':(exclude)go.sum' ':(exclude)*.min.js' ':(exclude)*.snap'
+          ':(exclude)dist/*' ':(exclude)build/*' ':(exclude)vendor/*')
+
+if [[ $WORKTREE -eq 1 ]]; then RANGE_ARGS=("$MERGE_BASE"); else RANGE_ARGS=("$MERGE_BASE" HEAD); fi
+
+echo "=== BRANCH ==="
+echo "head:       $HEAD_REF"
+echo "base:       $BASE"
+echo "merge-base: $(git rev-parse --short "$MERGE_BASE")"
+echo
+echo "=== COMMITS (oldest first) ==="
+git log --reverse --format='%h %s%n%w(0,4,4)%b' "$MERGE_BASE"..HEAD | sed '/^\s*$/d'
+echo
+echo "=== FILES (status) ==="
+git diff --name-status -M "${RANGE_ARGS[@]}" -- . "${EXCLUDES[@]}"
+echo
+echo "=== DIFFSTAT ==="
+git diff --stat=100 -M "${RANGE_ARGS[@]}" -- . "${EXCLUDES[@]}"
+echo
+echo "=== SHORTSTAT ==="
+git diff --shortstat -M "${RANGE_ARGS[@]}" -- . "${EXCLUDES[@]}"
+echo
+
+TOTAL=$(git diff -M -U3 "${RANGE_ARGS[@]}" -- . "${EXCLUDES[@]}" | wc -l)
+echo "=== FULL DIFF (${TOTAL} lines; showing up to ${MAX_LINES}) ==="
+git diff -M -U3 "${RANGE_ARGS[@]}" -- . "${EXCLUDES[@]}" | head -n "$MAX_LINES"
+if (( TOTAL > MAX_LINES )); then
+  echo
+  echo "... truncated. Read the remaining files individually with:"
+  echo "    git diff -M -U3 $MERGE_BASE HEAD -- <path>"
+fi
+========== END FILE: skills/mr-description/scripts/collect_diff.sh ==========
+
+========== BEGIN FILE: skills/mr-description/scripts/render_diagram.py ==========
+#!/usr/bin/env python3
+"""Render figures in the "engineering blog" style (black card, mono caps label, bold
+headline, takeaway, legend, Replay/Pause, thin white outlines, periwinkle fills).
+
+Four figure kinds, chosen with "kind" in the spec JSON:
+  flow      request flow between boxes, animated request/response particles
+  timeline  Gantt-style lanes over time, animated scrubber, one or more panels
+  stepper   tabbed state walkthrough (e.g. LIFO vs FIFO connection pools)
+  lanes     stacked comparison panels of pooled/multiplexed connection lanes
+
+Usage:
+  render_diagram.py spec.json --out-dir OUT [--name figure-01] [--png] [--scale N]
+                    [--freeze-at SECONDS] [--step N] [--keep-buttons]
+Outputs OUT/<name>.svg and .html (animated/interactive) and, with --png, a static .png.
+Spec format and design rules: references/diagram-style.md
+"""
+import argparse, html, json, math, os, sys
+
+SANS = "'Soehne','Helvetica Neue',Inter,'Segoe UI',Arial,'DejaVu Sans',sans-serif"
+MONO = "'Soehne Mono','JetBrains Mono','SF Mono',Menlo,Consolas,'DejaVu Sans Mono',monospace"
+BG, BORDER, RULE, NODE, EDGE, WHITE, DOT = "#000", "#2b2b2b", "#2b2b2b", "#d6d6d6", "#f2f2f2", "#fff", "#3a3a3a"
+COL = {"req": "#6f9cf7", "res": "#9be8c6", "cpu": "#8fa9ee", "net": "#5b7bd6", "wait": "#bcd0f5",
+       "hl": "#8fb0f5", "ink": "#0b1020"}
+KIND_DEFAULTS = {  # width, font scale, side padding
+    "flow": (1940, 1.0, 64), "timeline": (1790, 0.9, 64),
+    "stepper": (1620, 0.9, 64), "lanes": (1176, 0.62, 50),
+}
+
+
+def esc(s): return html.escape(str(s), quote=True)
+def col(c): return COL.get(c, c)
+
+
+def T(x, y, s, size=20, fam=SANS, w=400, fill=WHITE, anchor="start", ls=None, extra=""):
+    ls = f' letter-spacing="{ls}"' if ls is not None else ""
+    return (f'<text x="{x:.1f}" y="{y:.1f}" fill="{fill}" font-family="{fam}" font-size="{size:.1f}" '
+            f'font-weight="{w}" text-anchor="{anchor}"{ls}{extra}>{esc(s)}</text>')
+
+
+def MT(x, y, s, size=11, fill=WHITE, anchor="start", extra=""):
+    return T(x, y, str(s).upper(), size, MONO, 700, fill, anchor, 0.3, extra)
+
+
+def rect(x, y, w, h, rx=0, fill="none", stroke=None, sw=1, dash=None, extra=""):
+    st = f' stroke="{stroke}" stroke-width="{sw}"' if stroke else ""
+    da = f' stroke-dasharray="{dash}"' if dash else ""
+    return (f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" rx="{rx}" fill="{fill}"{st}{da}{extra}/>')
+
+
+def wrap(s, n):
+    words, lines, cur = s.split(), [], ""
+    for w in words:
+        if len(cur) + len(w) + 1 > n and cur:
+            lines.append(cur); cur = w
+        else:
+            cur = (cur + " " + w).strip()
+    return lines + ([cur] if cur else [])
+
+
+# ---------------------------------------------------------------- chrome ---
+def legend_icon(shape, color, x, cy, s):
+    c = col(color)
+    if shape == "square":
+        return rect(x, cy - 10.5 * s, 21 * s, 21 * s, 3, c, "#c9d6fb"), 21 * s
+    if shape == "ring":
+        return f'<circle cx="{x + 10.5 * s:.1f}" cy="{cy:.1f}" r="{9.5 * s:.1f}" fill="{BG}" stroke="{WHITE}" stroke-width="1.2"/>', 21 * s
+    if shape == "dash":
+        return f'<line x1="{x:.1f}" y1="{cy:.1f}" x2="{x + 26 * s:.1f}" y2="{cy:.1f}" stroke="{WHITE}" stroke-dasharray="3 3"/>', 26 * s
+    return f'<circle cx="{x + 10.5 * s:.1f}" cy="{cy:.1f}" r="{10.5 * s:.1f}" fill="{c}" stroke="#d6e2fb"/>', 21 * s
+
+
+def chrome(spec, W, fs, pad, legend, buttons):
+    kind = spec.get("kind", "flow")
+    out = []
+    label = f"FIGURE {str(spec.get('figure', '01')).upper()}" + (f" \u00b7 {spec['topic'].upper()}" if spec.get("topic") else "")
+    out.append(MT(pad, 94 * fs, label, 14 * fs))
+    out.append(T(pad, 168 * fs, spec["title"], 31 * fs, SANS, 700, ls=-0.4))
+    sub = spec.get("subtitle", "")
+    maxc = int((0.75 if kind == "flow" else 0.6) * W / (19 * fs * 0.5))
+    for i, ln in enumerate(wrap(sub, maxc)):
+        out.append(T(pad, (211 + 31 * i) * fs, ln, 19 * fs))
+    ly = 296 * fs
+    x = pad
+    for it in legend:
+        ic, wid = legend_icon(it.get("shape", "square"), it.get("color", "req"), x, ly, fs)
+        out.append(ic)
+        out.append(T(x + wid + 12 * fs, ly + 7 * fs, it["label"], 20 * fs))
+        x += wid + 12 * fs + len(it["label"]) * 10.2 * fs + 36 * fs
+    # buttons
+    bh, by, right = 51 * fs, 124 * fs, W - 55 * fs
+    pw, rw = 117 * fs, 123 * fs
+    px = right - pw
+    if "pause" in buttons:
+        out.append('<g id="pause" style="cursor:pointer">' + rect(px, by, pw, bh, 14 * fs, BG, WHITE)
+                   + f'<g id="pause-icon" fill="{WHITE}">{rect(px + 21 * fs, by + 20 * fs, 3.2 * fs, 12 * fs, 0.5)}'
+                   f'{rect(px + 27 * fs, by + 20 * fs, 3.2 * fs, 12 * fs, 0.5)}</g>'
+                   f'<path id="play-icon" d="M{px + 21 * fs:.1f} {by + 19 * fs:.1f} L{px + 32 * fs:.1f} {by + 26 * fs:.1f} '
+                   f'L{px + 21 * fs:.1f} {by + 33 * fs:.1f} Z" fill="{WHITE}" display="none"/>'
+                   + T(px + 47 * fs, by + 31 * fs, "Pause", 17 * fs, SANS, 500, extra=' id="pause-label"') + "</g>")
+    if "replay" in buttons:
+        rx_ = px - 12 * fs - rw
+        cx, cy, r = rx_ + 27 * fs, by + bh / 2, 7.5 * fs
+        out.append('<g id="replay" style="cursor:pointer">' + rect(rx_, by, rw, bh, 14 * fs, BG, WHITE)
+                   + f'<path d="M{cx + r:.1f} {cy - 2 * fs:.1f} A{r:.1f} {r:.1f} 0 1 1 {cx + r * 0.35:.1f} {cy - r * 0.94:.1f}" '
+                     f'fill="none" stroke="{WHITE}" stroke-width="1.8" stroke-linecap="round"/>'
+                     f'<path d="M{cx + r * 0.35 - 3 * fs:.1f} {cy - r - 3 * fs:.1f} L{cx + r * 0.35 + 1:.1f} {cy - r * 0.94:.1f} '
+                     f'L{cx + r * 0.35 - 4 * fs:.1f} {cy - r * 0.94 + 4 * fs:.1f}" fill="none" stroke="{WHITE}" stroke-width="1.8" stroke-linecap="round"/>'
+                   + T(rx_ + 49 * fs, by + 31 * fs, "Replay", 17 * fs, SANS, 500) + "</g>")
+    rule = (333 if legend else 308) * fs
+    return out, rule
+
+
+# ----------------------------------------------------------------- flow ----
+def anchor(n, side):
+    x, y, w, h = n["x"], n["y"], n["w"], n["h"]
+    return {"r": (x + w, y + h / 2), "l": (x, y + h / 2), "t": (x + w / 2, y), "b": (x + w / 2, y + h)}[side]
+
+
+def route(a, b, sides, vx=None, vy=None, via=None):
+    if via: return [a] + [tuple(p) for p in via] + [b]
+    if sides[0] in "lr":
+        if abs(a[1] - b[1]) < 0.6: return [a, b]
+        v = vx if vx is not None else (a[0] + b[0]) / 2
+        return [a, (v, a[1]), (v, b[1]), b]
+    if abs(a[0] - b[0]) < 0.6: return [a, b]
+    v = vy if vy is not None else (a[1] + b[1]) / 2
+    return [a, (a[0], v), (b[0], v), b]
+
+
+def rpath(pts, r=8):
+    c = [pts[0]]
+    for p in pts[1:]:
+        if abs(p[0] - c[-1][0]) > .01 or abs(p[1] - c[-1][1]) > .01: c.append(p)
+    pts = c
+    d = f"M{pts[0][0]:.1f},{pts[0][1]:.1f}"
+    for i in range(1, len(pts) - 1):
+        p0, p1, p2 = pts[i - 1], pts[i], pts[i + 1]
+        l1, l2 = math.hypot(p1[0] - p0[0], p1[1] - p0[1]), math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+        rr = min(r, l1 / 2, l2 / 2)
+        ux, uy, vx, vy = (p1[0] - p0[0]) / l1, (p1[1] - p0[1]) / l1, (p2[0] - p1[0]) / l2, (p2[1] - p1[1]) / l2
+        d += f" L{p1[0] - ux * rr:.1f},{p1[1] - uy * rr:.1f} Q{p1[0]:.1f},{p1[1]:.1f} {p1[0] + vx * rr:.1f},{p1[1] + vy * rr:.1f}"
+    return d + f" L{pts[-1][0]:.1f},{pts[-1][1]:.1f}"
+
+
+def particle(kind, href, dur, begin, ring=False, size=1.0):
+    """A request square / response dot moving along a path, looping forever."""
+    if kind == "req":
+        sh, close = (f'<rect x="{-6.5 * size}" y="{-6.5 * size}" width="{13 * size}" height="{13 * size}" rx="2.5" '
+                     f'fill="{COL["req"]}" stroke="#c9d6fb">'), "</rect>"
+    elif ring:
+        sh, close = f'<circle r="{6.5 * size}" fill="{BG}" stroke="{WHITE}" stroke-width="1.2">', "</circle>"
+    else:
+        sh, close = f'<circle r="{6.5 * size}" fill="{COL["res"]}" stroke="#c5f3df">', "</circle>"
+    return (sh + f'<animateMotion dur="{dur:.2f}s" begin="{begin:.2f}s" repeatCount="indefinite" rotate="0">'
+            f'<mpath xlink:href="{href}"/></animateMotion>' + close)
+
+
+def body_flow(spec, W, R):
+    H = spec.get("height", 920)
+    nodes = {n["id"]: n for n in spec.get("nodes", [])}
+    edges = spec.get("edges", [])
+    steps = sorted({e.get("step", 1) for e in edges if e.get("particles", True)}) or [1]
+    n = max(steps); seg = 1.1; win = seg * 2.8; Tt = 2 * n * seg + win + 1.0
+    out = [f'<rect x="16" y="{R:.1f}" width="{W - 32}" height="{H - 16 - R:.1f}" fill="url(#dots)"/>']
+    for g in spec.get("groups", []):
+        out.append(rect(g["x"] + .5, g["y"] + .5, g["w"], g["h"], 2, BG, NODE))
+    for lb in spec.get("labels", []):
+        out.append(MT(lb["x"], lb["y"], lb["text"], 13, anchor="middle"))
+    defs, parts = [], []
+    for i, e in enumerate(edges):
+        fs_, ts_ = e.get("fromSide", "r"), e.get("toSide", "l")
+        a, b = anchor(nodes[e["from"]], fs_), anchor(nodes[e["to"]], ts_)
+        if "fromY" in e: a = (a[0], e["fromY"])
+        if "toY" in e: b = (b[0], e["toY"])
+        pts = route(a, b, (fs_, ts_), e.get("viaX"), e.get("viaY"), e.get("via"))
+        ar = e.get("arrows", "both")
+        ms = ' marker-start="url(#chev)"' if ar in ("both", "start") else ""
+        me = ' marker-end="url(#chev)"' if ar in ("both", "end") else ""
+        out.append(f'<path id="e{i}" d="{rpath(pts)}" fill="none" stroke="{EDGE}" stroke-width="1"{ms}{me}/>')
+        defs.append(f'<path id="e{i}r" d="{rpath(list(reversed(pts)))}"/>')
+        if e.get("particles", True):
+            k = e.get("step", 1)
+            for kind, t0 in (("req", (k - 1) * seg), ("res", (2 * n - k) * seg)):
+                a_, b_ = t0 / Tt, min((t0 + win) / Tt, 1.0)
+                ep = 0.12 * win / Tt
+                sh = (f'<rect x="-6.5" y="-6.5" width="13" height="13" rx="2.5" fill="{COL["req"]}" stroke="#c9d6fb" opacity="0">'
+                      if kind == "req" else f'<circle r="6.5" fill="{COL["res"]}" stroke="#c5f3df" opacity="0">')
+                close = "</rect>" if kind == "req" else "</circle>"
+                parts.append(sh + f'<animateMotion dur="{Tt:.2f}s" repeatCount="indefinite" calcMode="linear" keyPoints="0;0;1;1" '
+                             f'keyTimes="0;{a_:.4f};{b_:.4f};1" rotate="0"><mpath xlink:href="#{"e%d" % i if kind == "req" else "e%dr" % i}"/></animateMotion>'
+                             f'<animate attributeName="opacity" dur="{Tt:.2f}s" repeatCount="indefinite" values="0;0;1;1;0;0" '
+                             f'keyTimes="0;{a_:.4f};{min(a_ + ep, b_):.4f};{max(b_ - ep, a_):.4f};{b_:.4f};1"/>' + close)
+    out.append("<defs>" + "".join(defs) + "</defs>")
+    for nd in spec.get("nodes", []):
+        x, y, w, h = nd["x"], nd["y"], nd["w"], nd["h"]
+        out.append(rect(x + .5, y + .5, w, h, 3, BG, NODE))
+        if nd.get("sub"):
+            out.append(T(x + 19, y + h / 2 - 1, nd["label"], 20))
+            out.append(MT(x + 19, y + h / 2 + 20, nd["sub"], 13))
+        else:
+            out.append(T(x + 19, y + h / 2 + 7, nd["label"], 20))
+    out += parts
+    return out, H, {"T": Tt, "freeze": n * seg * 0.95}
+
+
+# ------------------------------------------------------------- timeline ----
+def body_timeline(spec, W, R, pad):
+    ax = spec.get("axis", {"max": 40, "ticks": [0, 10, 20, 30, 40]})
+    tmax = ax["max"]; X0, X1 = pad + 186, W - pad; px = (X1 - X0) / tmax
+    play = tmax * 0.3; Tt = play + 1.6
+    out, y, cid = [], R, 0
+
+    def reveal(t0, t1):
+        a, b = t0 / tmax * play / Tt, t1 / tmax * play / Tt
+        return a, b
+
+    def track(ty, label_y, segs):
+        nonlocal cid
+        cid += 1
+        o = [f'<clipPath id="tc{cid}">{rect(X0 + .5, ty + .5, X1 - X0, 44, 22)}</clipPath><g clip-path="url(#tc{cid})">']
+        if segs and segs[0]["t"] > 0:
+            o.append(f'<line x1="{X0 + 12}" y1="{ty + 22}" x2="{X0 + segs[0]["t"] * px:.1f}" y2="{ty + 22}" stroke="#777" stroke-dasharray="1 3"/>')
+        for s in segs:
+            x, w = X0 + s["t"] * px, s["d"] * px
+            k = s.get("kind", "cpu")
+            fill = {"cpu": COL["cpu"], "net": COL["net"], "wait": COL["wait"]}.get(k, BG)
+            dash = "2 2" if k in ("wait", "blocked") else None
+            stroke = WHITE if k in ("wait", "blocked") else ("#9a9a9a" if k == "plain" else "#000")
+            a, b = reveal(s["t"], s["t"] + s["d"])
+            anim = (f'<animate attributeName="width" dur="{Tt:.2f}s" repeatCount="indefinite" calcMode="linear" '
+                    f'values="0;0;{w:.1f};{w:.1f}" keyTimes="0;{a:.4f};{b:.4f};1"/>') if k in ("cpu", "net", "wait") else ""
+            o.append(f'<rect x="{x:.1f}" y="{ty + 1}" width="{w:.1f}" height="42" fill="{fill}" stroke="{stroke}" '
+                     f'stroke-width="{1 if dash else 1.2}"{" stroke-dasharray=%s" % chr(34) + dash + chr(34) if dash else ""}>{anim}</rect>')
+            if s.get("text") and w > len(s["text"]) * 8 + 8:
+                tc = COL["ink"] if k in ("cpu", "wait") else WHITE
+                o.append(MT(x + w / 2, ty + 26, s["text"], 11, tc, "middle"))
+        o.append("</g>" + rect(X0 + .5, ty + .5, X1 - X0, 44, 22, "none", WHITE))
+        return "".join(o)
+
+    for pi, p in enumerate(spec["panels"]):
+        py = y
+        if pi > 0: out.append(f'<line x1="{pad}" y1="{py:.1f}" x2="{W - pad}" y2="{py:.1f}" stroke="{RULE}"/>')
+        out.append(T(pad, py + 46, p["title"], 23, SANS, 600, ls=-0.2))
+        if p.get("note"): out.append(T(W - pad, py + 46, p["note"], 18, anchor="end"))
+        if p.get("status"): out.append(T(pad, py + 91, p["status"], 18))
+        out.append(MT(pad, py + 152, ax.get("label", "Time \u2192"), 11))
+        for tk in ax["ticks"]:
+            out.append(MT(X0 + tk * px, py + 152, tk, 11, anchor="end" if tk == tmax else "start"))
+        thr = p["thread"]
+        out.append(T(pad, py + 176 + 29, thr.get("label", "Python thread"), 20, SANS, 500))
+        out.append(track(py + 176, 0, thr["segments"]))
+        out.append(f'<line x1="{pad}" y1="{py + 240}" x2="{W - pad}" y2="{py + 240}" stroke="{RULE}"/>')
+        ly = py + 276
+        for ln in p["lanes"]:
+            out.append(T(pad, ly + 16, ln["label"], 20, SANS, 500))
+            for j, sl in enumerate(wrap(ln.get("sub", "").upper(), 20)[:2]):
+                out.append(MT(pad, ly + 36 + j * 17, sl, 11))
+            out.append(track(ly, 0, ln["segments"]))
+            if "marker" in ln:
+                mx = X0 + ln["marker"] * px
+                out.append(f'<line x1="{mx:.1f}" y1="{ly - 2}" x2="{mx:.1f}" y2="{ly + 46}" stroke="{WHITE}" stroke-width="2"/>'
+                           f'<polygon points="{mx:.1f},{ly - 10} {mx + 5:.1f},{ly - 5} {mx:.1f},{ly} {mx - 5:.1f},{ly - 5}" fill="{WHITE}"/>')
+            ly += 87
+        out.append(f'<line x1="{X0}" y1="{py + 166}" x2="{X0}" y2="{ly - 40}" stroke="#4a6fd0" stroke-width="1">'
+                   f'<animate attributeName="x1" dur="{Tt:.2f}s" repeatCount="indefinite" values="{X0};{X1};{X1}" keyTimes="0;{play / Tt:.4f};1"/>'
+                   f'<animate attributeName="x2" dur="{Tt:.2f}s" repeatCount="indefinite" values="{X0};{X1};{X1}" keyTimes="0;{play / Tt:.4f};1"/></line>')
+        if p.get("footer"): out.append(T(X0, ly - 87 + 108, p["footer"], 19))
+        y = ly - 87 + 108 + 62
+    return out, y, {"T": Tt, "freeze": play * 0.46}
+
+
+# -------------------------------------------------------------- stepper ----
+def body_stepper(spec, W, R, pad, active, interactive):
+    steps = spec["steps"]
+    card = spec.get("card", {})
+    out = []
+    cw = min(1097, W - 2 * pad); cx = (W - cw) / 2
+    tabw = (W - 2 * pad) / len(steps)
+    out.append(f'<line x1="16" y1="{R + 93}" x2="{W - 16}" y2="{R + 93}" stroke="{RULE}"/>')
+    out.append(f'<line x1="16" y1="{R + 191}" x2="{W - 16}" y2="{R + 191}" stroke="{RULE}"/>')
+    out.append(f'<line x1="{pad}" y1="{R + 190}" x2="{W - pad}" y2="{R + 190}" stroke="#2f2f2f" stroke-width="3"/>')
+    for i, st in enumerate(steps):
+        tx = pad + i * tabw
+        out.append(f'<g id="tab-{i}" style="cursor:pointer">' + rect(tx, R + 93, tabw, 98, 0, "transparent")
+                   + MT(tx, R + 146, f"{i + 1:02d}  {st['tab']}", 11.5) + "</g>")
+        out.append(f'<line id="ul-{i}" x1="{tx:.1f}" y1="{R + 190}" x2="{tx + 171:.1f}" y2="{R + 190}" stroke="{COL["hl"]}" '
+                   f'stroke-width="3" display="{"inline" if i == active else "none"}"/>')
+    cy = R + 228
+    for i, st in enumerate(steps):
+        g = [f'<g id="step-{i}" display="{"inline" if i == active else "none"}">']
+        g.append(T(W / 2, R + 54, st.get("caption", ""), 19 * 0.95, anchor="middle") if False else T(pad, R + 54, st.get("caption", ""), 18.5))
+        g.append(rect(cx + .5, cy + .5, cw, 800, 14, BG, "#333"))
+        g.append(T(cx + 20, cy + 43, st.get("title", card.get("title", "")), 22, SANS, 600))
+        g.append(T(cx + 20, cy + 80, st.get("note", card.get("note", "")), 16.5))
+        pool = st.get("pool", {})
+        g.append(MT(cx + 20, cy + 117, pool.get("first", "Returned first"), 11))
+        g.append(MT(cx + cw - 20, cy + 117, pool.get("last", "Returned last"), 11, anchor="end"))
+        n = pool.get("slots", 9); inner = cw - 40; gap = 5
+        pw_ = (inner - (n - 1) * gap) / n
+        for j in range(n):
+            x = cx + 20 + j * (pw_ + gap)
+            it = pool["filled"][j] if j < len(pool.get("filled", [])) else None
+            if it:
+                hl = it.get("hl")
+                g.append(rect(x + .5, cy + 135.5, pw_, 38, 19, BG, COL["hl"] if hl else NODE))
+                g.append(MT(x + pw_ / 2 + .5, cy + 159, it["text"], 11, anchor="middle"))
+            else:
+                g.append(rect(x + .5, cy + 135.5, pw_, 38, 19, "none", "#bbb", dash="3 3"))
+        g.append(MT(cx + cw / 2, cy + 209, pool.get("status", ""), 11, anchor="middle"))
+        g.append(f'<line x1="{cx + .5}" y1="{cy + 230}" x2="{cx + cw - .5}" y2="{cy + 230}" stroke="#333"/>')
+        sv = st["servers"]; m = len(sv); sgap = 14; scw = (inner - (m - 1) * sgap) / m
+        top = cy + 342
+        for j, s in enumerate(sv):
+            sx = cx + 20 + j * (scw + sgap)
+            ar = s.get("arrows", {"down": True, "up": True})
+            dcol = COL["hl"] if ar.get("hl") == "down" else NODE
+            ucol = COL["hl"] if ar.get("hl") == "up" else NODE
+            dx, ux = sx + scw * 0.458, sx + scw * 0.545
+            if ar.get("down", True):
+                g.append(f'<path class="traffic-path" d="M{dx:.1f} {cy + 230} L{dx:.1f} {top}" stroke="{dcol}" fill="none" marker-end="url(#chev)"/>')
+                g.append(f'<circle r="5" fill="{COL["hl"]}" class="packet" opacity="0"><animateMotion dur="1.65s" begin="{j * .22:.2f}s" repeatCount="indefinite" path="M{dx:.1f} {cy + 230} L{dx:.1f} {top}"/><animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.15;.85;1" dur="1.65s" repeatCount="indefinite"/></circle>')
+            if ar.get("up", True):
+                g.append(f'<path class="traffic-path" d="M{ux:.1f} {top} L{ux:.1f} {cy + 230}" stroke="{ucol}" fill="none" marker-end="url(#chev)"/>')
+                g.append(f'<circle r="4" fill="{COL["res"]}" opacity="0"><animateMotion dur="2.1s" begin="{.75 + j * .28:.2f}s" repeatCount="indefinite" path="M{ux:.1f} {top} L{ux:.1f} {cy + 230}"/><animate attributeName="opacity" values="0;1;1;0" keyTimes="0;.15;.85;1" dur="2.1s" repeatCount="indefinite"/></circle>')
+            if ar.get("ring"):
+                g.append(f'<circle cx="{ux:.1f}" cy="{cy + 262}" r="5" fill="{BG}" stroke="{ucol}"/>')
+            g.append(rect(sx + .5, top + .5, scw, 294, 12, BG, NODE))
+            g.append(MT(sx + scw / 2, top + 29, "Server process", 11, anchor="middle"))
+            g.append(T(sx + scw / 2, top + 62, s["name"], 20, SANS, 700, anchor="middle"))
+            off = 0
+            if s.get("banner"):
+                g.append(rect(sx + 12, top + 78, scw - 23, 38, 2, COL["cpu"]))
+                g.append(MT(sx + scw / 2, top + 101, s["banner"], 11, COL["ink"], "middle"))
+                off = 50
+            g.append(T(sx + scw / 2, top + 86 + off, s.get("count", 0), 17, anchor="middle"))
+            g.append(MT(sx + scw / 2, top + 110 + off, "Concurrent requests", 11, anchor="middle"))
+            sl = s.get("slots", 3); rq = s.get("reqs", s.get("count", 0))
+            for k in range(sl):
+                yy = top + 148 + off + k * 31
+                if k >= sl - rq:
+                    last = k == sl - 1
+                    g.append(rect(sx + 12.5, yy + .5, scw - 25, 25, 2, COL["cpu"] if last else COL["wait"]))
+                    g.append(MT(sx + scw / 2, yy + 17, "Request", 11, COL["ink"], "middle"))
+                else:
+                    g.append(rect(sx + 12.5, yy + .5, scw - 25, 25, 2, "none", "#bbb", dash="3 3"))
+        g.append(f'<line x1="{cx + .5}" y1="{cy + 664}" x2="{cx + cw - .5}" y2="{cy + 664}" stroke="#333"/>')
+        q = st.get("queue", {"total": 18, "filled": 0})
+        g.append(MT(cx + 20, cy + 692, "Subsequent requests", 11))
+        qw = (inner - (q["total"] - 1) * 5) / q["total"]
+        for k in range(q["total"]):
+            qx = cx + 20 + k * (qw + 5)
+            if k < q.get("filled", 0):
+                g.append(rect(qx + .5, cy + 708.5, qw, 25, 2, COL["wait"]))
+            else:
+                g.append(rect(qx + .5, cy + 708.5, qw, 25, 2, "none", "#bbb", dash="3 3"))
+        g.append("</g>")
+        out += g
+    return out, cy + 800 + 40, {"T": len(steps) * 3.2, "freeze": 0, "steps": len(steps)}
+
+
+# ---------------------------------------------------------------- lanes ----
+def body_lanes(spec, W, R, pad):
+    ring = spec.get("response_style", "ring") == "ring"
+    out, defs, y = [], [], R
+    uid = 0
+    for pi, p in enumerate(spec["panels"]):
+        py = y + (26 if pi == 0 else 18)
+        if pi > 0: out.append(f'<line x1="{pad}" y1="{y:.1f}" x2="{W - pad}" y2="{y:.1f}" stroke="{RULE}"/>')
+        out.append(T(pad, py + 20, p["title"], 16, SANS, 600))
+        out.append(T(pad, py + 44, p.get("desc", ""), 12.5))
+        for hd in p.get("headers", []):
+            out.append(MT(hd["x"], py + 76, hd["text"], 8.7, anchor="middle"))
+        rows = p["rows"]; top = py + 92; rowh = 40
+        bh = len(rows) * rowh - 6
+        mode = p.get("mode", "direct")
+        sx0, sw_ = 967, 160
+        out.append(rect(sx0 + .5, top - 3 + .5, sw_, bh + 6, 9, BG, WHITE))
+        for k, ln in enumerate(wrap(p.get("storage", "Azure Cosmos DB"), 12)):
+            out.append(T(sx0 + sw_ / 2, top + bh / 2 + (k - (len(wrap(p.get("storage", "Azure Cosmos DB"), 12)) - 1) / 2) * 20 + 5, ln, 15.5, SANS, 600, anchor="middle"))
+        mid = p.get("mid")
+        mx0, mw = 477, 132
+        if mid:
+            out.append(rect(mx0 + .5, top - 3 + .5, mw, bh + 6, 9, BG, WHITE))
+            out.append(T(mx0 + mw / 2, top + bh / 2 + 2, mid["label"], 15.5, SANS, 600, anchor="middle"))
+            out.append(MT(mx0 + mw / 2, top + bh / 2 + 22, mid.get("sub", ""), 8.7, anchor="middle"))
+        beat = 0
+        for i, r in enumerate(rows):
+            cy = top + i * rowh + 17
+            out.append(rect(140.5, cy - 17 + .5, 125, 34, 3, BG, NODE))
+            out.append(MT(203, cy - 3, r["label"], 8.7, anchor="middle"))
+            out.append(MT(203, cy + 10, r.get("sub", ""), 8.7, anchor="middle"))
+            # lead-in
+            uid += 1
+            inc = r.get("incoming", False)
+            out.append(f'<path id="L{uid}" d="M{pad} {cy} L140 {cy}" stroke="{EDGE if inc else "#777"}" '
+                       f'stroke-dasharray="{"" if inc else "1 3"}" fill="none"/>')
+            if inc: out.append(particle("req", f"#L{uid}", 3.0, -(beat % 3), ring)); beat += 1.1
+            busy = r.get("active", 0) > 0
+            if mid:
+                uid += 1
+                out.append(f'<path id="L{uid}" d="M265.5 {cy} L{mx0} {cy}" stroke="{EDGE}" '
+                           f'stroke-dasharray="{"" if busy else "3 3"}" fill="none"/>')
+                defs.append(f'<path id="L{uid}r" d="M{mx0} {cy} L265.5 {cy}"/>')
+                if busy:
+                    out.append(particle("req", f"#L{uid}", 3.0, -(beat % 3), ring)); beat += 1.3
+                    out.append(particle("res", f"#L{uid}r", 3.0, -(beat % 3), ring)); beat += 0.9
+            elif mode == "direct":
+                peak, act = r.get("peak", 3), r.get("active", 0)
+                for j in range(peak):
+                    ly_ = cy - (peak - 1) * 6.5 + j * 13
+                    uid += 1
+                    isb = j < act
+                    out.append(f'<path id="L{uid}" d="M265.5 {ly_:.1f} L{sx0} {ly_:.1f}" stroke="{EDGE}" '
+                               f'stroke-dasharray="{"" if isb else "3 3"}" fill="none"/>')
+                    defs.append(f'<path id="L{uid}r" d="M{sx0} {ly_:.1f} L265.5 {ly_:.1f}"/>')
+                    if isb:
+                        out.append(particle("req" if j % 2 == 0 else "res", f"#L{uid}" if j % 2 == 0 else f"#L{uid}r", 3.4, -(beat % 3.4), ring)); beat += 1.1
+        # mid -> storage
+        if mid:
+            if mode == "pooled":
+                for i in range(p.get("open", len(rows))):
+                    cy = top + i * rowh + 17
+                    uid += 1
+                    out.append(f'<path id="L{uid}" d="M{mx0 + mw} {cy} L{sx0} {cy}" stroke="{EDGE}" fill="none"/>')
+                    defs.append(f'<path id="L{uid}r" d="M{sx0} {cy} L{mx0 + mw} {cy}"/>')
+                    out.append(particle("req" if i % 2 == 0 else "res", f"#L{uid}" if i % 2 == 0 else f"#L{uid}r", 3.2, -(beat % 3.2), ring)); beat += 1.0
+            else:
+                cy = top + bh / 2
+                uid += 1
+                out.append(f'<path id="L{uid}" d="M{mx0 + mw} {cy} L{sx0} {cy}" stroke="{EDGE}" fill="none"/>')
+                defs.append(f'<path id="L{uid}r" d="M{sx0} {cy} L{mx0 + mw} {cy}"/>')
+                for k in range(p.get("streams", 6)):
+                    out.append(particle("req" if k % 2 == 0 else "res", f"#L{uid}" if k % 2 == 0 else f"#L{uid}r", 3.0, -(k * 0.5), ring))
+        if p.get("footer"): out.append(T(pad, top + bh + 36, p["footer"], 12.5))
+        y = top + bh + 36 + 28
+    out.append("<defs>" + "".join(defs) + "</defs>")
+    return out, y + 10, {"T": 3.2, "freeze": 1.1}
+
+
+# ----------------------------------------------------------------- main ----
+JS = """<script><![CDATA[(function(){
+var s=document.currentScript.ownerSVGElement, paused=false, current=0, timer=null, N=%d;
+var get=function(id){return s.getElementById(id)};
+var stepDuration=3200;
+function show(i){current=i;for(var k=0;k<N;k++){
+ var g=get('step-'+k),u=get('ul-'+k);
+ if(g){g.setAttribute('display',k===i?'inline':'none');g.classList.remove('step-enter');
+ if(k===i){void g.getBoundingClientRect();g.classList.add('step-enter');}}
+ if(u)u.setAttribute('display',k===i?'inline':'none');
+} updateProgress();}
+function auto(){clearInterval(timer);if(N>1&&!paused){timer=setInterval(function(){show((current+1)%%N)},stepDuration);}}
+function label(){var l=get('pause-label');if(!l)return;
+ l.textContent=paused?'Play':'Pause';get('pause-icon').setAttribute('display',paused?'none':'inline');
+ get('play-icon').setAttribute('display',paused?'inline':'none');}
+function updateProgress(){var h=document.getElementById('animation-progress');if(h&&N>1)h.value=current;}
+function setPause(flag){paused=flag;if(paused){s.pauseAnimations();clearInterval(timer);}else{s.unpauseAnimations();auto();}label();}
+var pause=get('pause');if(pause)pause.addEventListener('click',function(){setPause(!paused)});
+var replay=get('replay');if(replay)replay.addEventListener('click',function(){
+ s.setCurrentTime(0);if(N>1)show(0);setPause(false);});
+for(var k=0;k<N;k++){(function(i){var t=get('tab-'+i);if(t){t.setAttribute('tabindex','0');t.setAttribute('role','button');
+ var select=function(){show(i);clearInterval(timer);if(!paused)auto();};
+ t.addEventListener('click',select);t.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();select();}});
+}})(k);}
+var slider=document.getElementById('animation-progress');if(slider){slider.max=N>1?N-1:1000;
+ slider.addEventListener('input',function(){if(N>1){show(+slider.value);clearInterval(timer);setPause(true);}else{
+ s.setCurrentTime((+slider.value/1000)*window.__diagramDuration);setPause(true);
+ }});}
+if(N>1)show(0);auto();
+if(N===0&&slider){var tick=function(){if(!paused&&window.__diagramDuration){
+ slider.value=Math.round((s.getCurrentTime()%%window.__diagramDuration)/window.__diagramDuration*1000);}
+ requestAnimationFrame(tick);};requestAnimationFrame(tick);}
+var media=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)');
+if(media&&media.matches)setPause(true);
+})();]]></script>"""
+
+
+def build(spec, interactive=True, buttons=True, active_step=0):
+    kind = spec.get("kind", "flow")
+    dW, fs, pad = KIND_DEFAULTS[kind]
+    W, fs, pad = spec.get("width", dW), spec.get("fs", fs), spec.get("pad", pad)
+    legend = spec.get("legend", [{"shape": "square", "color": "req", "label": "Request"},
+                                  {"shape": "circle", "color": "res", "label": "Response"}] if kind == "flow" else [])
+    btn = spec.get("buttons", ["pause"] if kind == "flow" else ["replay", "pause"]) if buttons else []
+    ch, R = chrome(spec, W, fs, pad, legend, btn)
+    if kind == "flow": body, H, meta = body_flow(spec, W, R)
+    elif kind == "timeline": body, H, meta = body_timeline(spec, W, R, pad)
+    elif kind == "stepper": body, H, meta = body_stepper(spec, W, R, pad, active_step, interactive)
+    elif kind == "lanes": body, H, meta = body_lanes(spec, W, R, pad)
+    else: raise SystemExit(f"unknown kind {kind}")
+    H = int(math.ceil(H))
+    head = [f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 {W} {H}" '
+            f'width="{W}" height="{H}" role="img" aria-label="{esc(spec["title"])}"><title>{esc(spec["title"])}</title>',
+            '<defs><pattern id="dots" width="8" height="8" patternUnits="userSpaceOnUse">'
+            f'<circle cx="4" cy="4" r="0.9" fill="{DOT}"/></pattern>'
+            f'<marker id="chev" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" '
+            f'orient="auto-start-reverse"><path d="M1.5 1.5 L8.5 5 L1.5 8.5" fill="none" stroke="{EDGE}" stroke-width="1.2" '
+            'stroke-linecap="round" stroke-linejoin="round"/></marker></defs>',
+            rect(0, 0, W, H, 0, BG), rect(15.5, 15.5, W - 31, H - 31, 4, BG, BORDER),
+            f'<line x1="16" y1="{R:.1f}" x2="{W - 16}" y2="{R:.1f}" stroke="{RULE}"/>']
+    tail = []
+    if interactive and (btn or kind == "stepper"):
+        tail.append(JS % meta.get("steps", 0))
+    svg = "\n".join(head + ch + body + tail + ["</svg>"])
+    meta.update(W=W, H=H)
+    return svg, meta
+
+
+def wrap_html(svg, title, duration=3.2, steps=0):
+    """SVG stays portable; the HTML adds a seekable playback timeline."""
+    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<title>{esc(title)}</title><style>html,body{{margin:0;background:#000;color:#eee;font-family:Arial,sans-serif}}'
+            f'body{{display:flex;align-items:center;flex-direction:column;padding:24px;box-sizing:border-box}}'
+            f'svg{{width:100%;max-width:{{MAXW}}px;height:auto;display:block}}'
+            f'.playback{{width:100%;max-width:{{MAXW}}px;padding:14px 8px;box-sizing:border-box;display:flex;gap:12px;align-items:center}}'
+            f'.playback label{{font-size:11px;letter-spacing:.08em;color:#aaa}}'
+            f'input[type=range]{{flex:1;accent-color:#8fb0f5;cursor:pointer}}'
+            f'.step-enter{{animation:enter .38s ease-out both}}'
+            f'@keyframes enter{{from{{opacity:.35}}to{{opacity:1}}}}'
+            f'@media(prefers-reduced-motion:reduce){{.step-enter{{animation:none}}}}'
+            f'</style><script>window.__diagramDuration={float(duration)};</script></head><body>\n{svg}\n'
+            f'<div class="playback"><label for="animation-progress">{("STEP" if steps else "TIMELINE")}</label>'
+            f'<input type="range" id="animation-progress" min="0" max="{max(0, steps-1) if steps else 1000}" value="0" aria-label="Seek animation"/></div>'
+            f'</body></html>')
+
+
+def render_png(html_path, png_path, W, H, scale, freeze):
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        import shutil
+        browser_path = shutil.which("chromium") or shutil.which("google-chrome")
+        try:
+            b = p.chromium.launch()
+        except Exception:
+            if not browser_path:
+                raise
+            b = p.chromium.launch(executable_path=browser_path, args=["--no-sandbox"])
+        pg = b.new_page(viewport={"width": W, "height": H}, device_scale_factor=scale)
+        pg.set_content(open(html_path, encoding="utf-8").read(), wait_until="load")
+        pg.add_style_tag(content=f"body{{padding:0!important;display:block!important}}svg{{max-width:none!important;width:{W}px!important}}")
+        pg.evaluate("t=>{const s=document.querySelector('svg');s.pauseAnimations();s.setCurrentTime(t);}", freeze)
+        pg.wait_for_timeout(250)
+        pg.locator("svg").screenshot(path=png_path)
+        b.close()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("spec"); ap.add_argument("--out-dir", required=True); ap.add_argument("--name")
+    ap.add_argument("--png", action="store_true"); ap.add_argument("--scale", type=float)
+    ap.add_argument("--freeze-at", type=float); ap.add_argument("--step", type=int, default=None,
+                    help="stepper: 1-based step to show in the PNG (default: last)")
+    ap.add_argument("--keep-buttons", action="store_true", help="keep Replay/Pause in the PNG")
+    a = ap.parse_args()
+    spec = json.load(open(a.spec)); os.makedirs(a.out_dir, exist_ok=True)
+    name = a.name or f"figure-{str(spec.get('figure', '01')).zfill(2).lower()}"
+    svg, meta = build(spec)
+    open(os.path.join(a.out_dir, name + ".svg"), "w").write('<?xml version="1.0" encoding="UTF-8"?>\n' + svg)
+    open(os.path.join(a.out_dir, name + ".html"), "w").write(wrap_html(svg, spec["title"], meta["T"], meta.get("steps", 0)).replace("{MAXW}", str(meta["W"])))
+    print("wrote", name + ".svg", name + ".html")
+    if a.png:
+        step = (a.step - 1) if a.step else (len(spec.get("steps", [])) - 1 if spec.get("kind") == "stepper" else 0)
+        psvg, pm = build(spec, interactive=False, buttons=a.keep_buttons, active_step=max(step, 0))
+        tmp = os.path.join(a.out_dir, f".{name}.src.html")
+        open(tmp, "w").write(wrap_html(psvg, spec["title"], pm["T"], pm.get("steps", 0)).replace("{MAXW}", str(pm["W"])))
+        scale = a.scale or max(1.0, round(1900 / pm["W"], 2))
+        render_png(tmp, os.path.join(a.out_dir, name + ".png"), pm["W"], pm["H"], scale,
+                   a.freeze_at if a.freeze_at is not None else pm["freeze"])
+        os.remove(tmp); print("wrote", name + ".png")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+========== END FILE: skills/mr-description/scripts/render_diagram.py ==========
+
+========== BEGIN FILE: skills/mr-description/scripts/render_continuous.py ==========
+#!/usr/bin/env python3
+"""Standalone continuous, time-seekable animated engineering diagram renderer.
+Usage: python3 render_continuous.py scenario.json --out diagram.html
+No Python dependencies. Output is self-contained HTML with no CDN requirements.
+Coordinates/paths are SVG space, events advance with an actual elapsed-time clock.
+"""
+import argparse,json,html,pathlib
+
+def esc(s):return html.escape(str(s),quote=True)
+def render(spec):
+    W,H=spec.get('width',1500),spec.get('height',850)
+    duration=spec.get('duration',18)
+    nodes=spec['nodes']; byid={n['id']:n for n in nodes}
+    groups=spec.get('groups',[])
+    routes=spec['routes']
+    # route paths are authored, so precise loops and non-overlapping curved joins are possible.
+    gsvg=''.join(f'<rect x="{g["x"]}" y="{g["y"]}" width="{g["w"]}" height="{g["h"]}" rx="12" class="group"/><text class="group-label" x="{g["x"]+14}" y="{g["y"]+23}">{esc(g["label"])}</text>' for g in groups)
+    lines=''.join(f'<path id="path-{esc(k)}" d="{esc(v["d"])}" class="wire {esc(v.get("class",""))}" marker-end="url(#arrow)"/><text x="{v.get("labelX",0)}" y="{v.get("labelY",0)}" class="edge-label">{esc(v.get("label",""))}</text>' for k,v in routes.items())
+    nsvg=''.join(f'<g class="node" id="node-{esc(n["id"])}"><rect x="{n["x"]}" y="{n["y"]}" width="{n["w"]}" height="{n["h"]}" rx="7"/><text x="{n["x"]+17}" y="{n["y"]+31}" class="node-main">{esc(n["label"])}</text><text x="{n["x"]+17}" y="{n["y"]+51}" class="node-sub">{esc(n.get("sub",""))}</text><text x="{n["x"]+17}" y="{n["y"]+69}" class="node-state" id="state-{esc(n["id"])}"></text></g>' for n in nodes)
+    phase_buttons=''.join(f'<button type="button" class="phase" data-phase="{i}"><span>{i+1:02d}</span> {esc(p["label"])}</button>' for i,p in enumerate(spec['phases']))
+    css='''
+    :root{color-scheme:dark;--fg:#f4f4f4;--muted:#aeaeae;--stroke:#414141;--blue:#86aaf8;--green:#a5e7cd;--red:#f2a0aa;--orange:#e7c88c}
+    *{box-sizing:border-box}body{background:#000;color:var(--fg);margin:0;font-family:Inter,'Helvetica Neue',Arial,sans-serif}
+    .shell{max-width:1590px;margin:28px auto;border:1px solid #303030;border-radius:9px;overflow:hidden;background:#020202}
+    header{padding:43px 46px 25px;display:flex;align-items:start;justify-content:space-between;gap:28px}
+    .eyebrow,.group-label,.edge-label,.node-sub,.node-state,.legend,.phase,.status,.footer,.clock{font-family:'SFMono-Regular',Consolas,Monaco,monospace;letter-spacing:.035em}
+    .eyebrow{font-size:12px;font-weight:700}.title{font-size:30px;letter-spacing:-.65px;margin:24px 0 13px;font-weight:700}.subtitle{font-size:16px;color:#dedede;max-width:960px;line-height:1.55}
+    .controls{display:flex;gap:10px;flex:none;margin-top:54px}.controls button{font-size:15px;color:white;background:none;border:1px solid #bababa;border-radius:11px;padding:13px 17px;cursor:pointer}.controls button:hover{background:#171717}
+    .narrative{border-top:1px solid #333;border-bottom:1px solid #333;padding:20px 46px;min-height:80px;display:flex;gap:20px;align-items:center;justify-content:space-between}
+    #narrative{font-size:17px;line-height:1.45;transition:opacity .2s;max-width:1070px;min-height:26px}.status{font-size:11px;color:#aaa;white-space:nowrap}
+    .phases{display:flex;align-items:stretch;border-bottom:1px solid #333;position:relative}.phase{flex:1;background:transparent;color:#aaa;border:0;text-align:left;padding:24px 14px 30px 46px;font-size:11px;cursor:pointer}.phase span{opacity:.9;margin-right:10px}.phase.current{color:#fff}.phase:hover{background:#111}
+    .phase-progress{height:3px;position:absolute;left:0;right:0;bottom:0;background:#252525}.phase-progress i{height:100%;display:block;background:#9ec2ff;transform-origin:left;transform:scaleX(0)}
+    .diagram-wrap{padding:14px 26px 4px;background:#010101;position:relative}svg{display:block;width:100%;height:auto;overflow:visible}
+    .group{fill:transparent;stroke:#414141;stroke-width:1}.group-label{fill:#aaa;font-size:11px}.wire{fill:none;stroke:#858585;stroke-width:1.5}.wire.retry{stroke:#d6bd88;stroke-dasharray:5 5}.wire.failure{stroke:#dd889a;stroke-dasharray:5 5}.edge-label{font-size:11px;fill:#c5c5c5}
+    .node rect{fill:#000;stroke:#aaa;stroke-width:1.2;transition:stroke .25s,fill .25s}.node.active rect{stroke:#9dbafb;fill:#0b1423}.node.failed rect{stroke:#ef9fa8;fill:#201014}.node.complete rect{stroke:#b2ebcf;fill:#0b1d15}.node-main{fill:white;font-size:19px;font-weight:550}.node-sub{fill:#bdbdbd;font-size:11px}.node-state{fill:var(--green);font-size:10px}
+    .packet.request{fill:var(--blue);stroke:#d1defe;stroke-width:1}.packet.success{fill:var(--green);stroke:#d6fff0;stroke-width:1}.packet.failure{fill:var(--red);stroke:#ffd5da;stroke-width:1}.packet.retry{fill:var(--orange);stroke:#fcead1;stroke-width:1}
+    .legend{display:flex;gap:25px;flex-wrap:wrap;padding:4px 46px 20px;color:#ccc;font-size:12px}.key{display:inline-block;width:11px;height:11px;margin-right:8px;border-radius:3px}.key.request{background:var(--blue)}.key.success{background:var(--green);border-radius:50%}.key.failure{background:var(--red);border-radius:50%}.key.retry{background:var(--orange)}
+    .footer{border-top:1px solid #303030;padding:16px 46px 22px;display:flex;align-items:center;gap:18px;font-size:12px;color:#aaa}.footer input{flex:1;accent-color:#a0bcff;cursor:pointer}.clock{min-width:115px;text-align:right;font-size:12px}
+    @media(max-width:800px){header{padding:24px;flex-direction:column}.title{font-size:23px}.controls{margin-top:0}.narrative{padding:18px 24px}.phase{padding:15px;font-size:9px}.diagram-wrap{overflow-x:auto}svg{min-width:950px}.legend,.footer{padding-left:24px;padding-right:24px}}
+    @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+    '''
+    data=json.dumps(spec,separators=(',',':')).replace('</','<\\/')
+    js='''
+    (()=>{
+      const spec=JSON.parse(document.getElementById('scenario').textContent), duration=spec.duration;
+      const svg=document.getElementById('canvas'), packetLayer=document.getElementById('packets');
+      const range=document.getElementById('seek'), progress=document.getElementById('phase-progress');
+      const narration=document.getElementById('narrative'), clock=document.getElementById('clock');
+      const pauseButton=document.getElementById('toggle');
+      const phaseButtons=[...document.querySelectorAll('.phase')];
+      const routePaths=Object.fromEntries(Object.keys(spec.routes).map(id=>[id,document.getElementById('path-'+id)]));
+      let t=0,playing=!matchMedia('(prefers-reduced-motion: reduce)').matches,last=null, phase=-1;
+      const packetEls=spec.packets.map((p,i)=>{
+        const el=document.createElementNS('http://www.w3.org/2000/svg',p.kind==='request'||p.kind==='retry'?'rect':'circle');
+        el.setAttribute('class','packet '+p.kind);
+        if(el.tagName==='rect'){el.setAttribute('width','12');el.setAttribute('height','12');el.setAttribute('rx','2');el.setAttribute('x','-6');el.setAttribute('y','-6')}
+        else el.setAttribute('r','7');
+        el.setAttribute('visibility','hidden');packetLayer.appendChild(el);return el;
+      });
+      const stateNodes=spec.nodes.map(n=>({id:n.id,el:document.getElementById('node-'+n.id),text:document.getElementById('state-'+n.id)}));
+      function nowPhase(time){let idx=0;for(let i=0;i<spec.phases.length;i++)if(time>=spec.phases[i].at)idx=i;return idx}
+      function render(time){
+        t=Math.max(0,Math.min(duration,time));range.value=t;
+        progress.style.transform='scaleX('+(t/duration)+')';clock.textContent=t.toFixed(1)+' / '+duration.toFixed(1)+'s';
+        let next=nowPhase(t);
+        if(next!==phase){phase=next;phaseButtons.forEach((b,i)=>b.classList.toggle('current',i===phase))}
+        // Narratives are keyed to the simulation clock, not three discrete pages.
+        let n=spec.narratives[0];for(const x of spec.narratives)if(t>=x.at)n=x;
+        if(narration.dataset.current!==String(n.at)){narration.dataset.current=String(n.at);narration.textContent=n.text}
+        for(const st of stateNodes){
+          let status=null;for(const s of (spec.states||[]))if(s.id===st.id&&s.at<=t)status=s;
+          st.el.classList.remove('active','failed','complete');
+          if(status){if(status.style)st.el.classList.add(status.style);st.text.textContent=status.text||''}else st.text.textContent='';
+        }
+        spec.packets.forEach((p,i)=>{
+          const el=packetEls[i],end=p.at+p.duration;
+          if(t<p.at||t>end){el.setAttribute('visibility','hidden');return}
+          const path=routePaths[p.route];if(!path)return;
+          const f=Math.max(0,Math.min(1,(t-p.at)/p.duration));
+          const eased=f*f*(3-2*f);const pt=path.getPointAtLength(path.getTotalLength()*eased);
+          el.setAttribute('transform',`translate(${pt.x} ${pt.y})`);el.setAttribute('visibility','visible');
+        });
+      }
+      function toggle(flag){playing=flag;pauseButton.textContent=playing?'Ⅱ Pause':'▷ Play';}
+      document.getElementById('replay').addEventListener('click',()=>{render(0);toggle(true)});
+      pauseButton.addEventListener('click',()=>toggle(!playing));
+      range.addEventListener('input',()=>{toggle(false);render(Number(range.value))});
+      phaseButtons.forEach((b,i)=>b.addEventListener('click',()=>{render(spec.phases[i].at);toggle(false)}));
+      function tick(ts){if(last===null)last=ts;const delta=Math.min(0.08,(ts-last)/1000);last=ts;
+        if(playing){let next=t+delta;if(next>=duration){next=duration;toggle(false)}render(next)}
+        requestAnimationFrame(tick);
+      }
+      render(0);toggle(playing);requestAnimationFrame(tick);
+    })();
+    '''
+    return f'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(spec['title'])}</title><style>{css}</style></head><body><main class="shell"><header><div><p class="eyebrow">{esc(spec.get('figure','FIGURE 01'))} · {esc(spec.get('topic','ENGINEERING'))}</p><h1 class="title">{esc(spec['title'])}</h1><p class="subtitle">{esc(spec.get('subtitle',''))}</p></div><div class="controls"><button id="replay" type="button">↻ Replay</button><button id="toggle" type="button">Ⅱ Pause</button></div></header><div class="narrative"><span id="narrative" role="status" aria-live="off"></span><span class="status">SIMULATED SEQUENCE</span></div><nav class="phases" aria-label="Animation phases">{phase_buttons}<div class="phase-progress"><i id="phase-progress"></i></div></nav><div class="diagram-wrap"><svg id="canvas" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" aria-label="{esc(spec['title'])}"><defs><pattern id="dots" width="9" height="9" patternUnits="userSpaceOnUse"><circle cx="4" cy="4" r=".85" fill="#292929"/></pattern><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1 L8 5 L1 9" stroke="#a2a2a2" fill="none" stroke-width="1.2"/></marker></defs><rect width="{W}" height="{H}" fill="url(#dots)"/>{gsvg}{lines}{nsvg}<g id="packets"></g></svg></div><div class="legend"><span><i class="key request"></i> Request / command</span><span><i class="key success"></i> Success / acknowledgement</span><span><i class="key retry"></i> Retry</span><span><i class="key failure"></i> Failure</span></div><div class="footer"><span>TIME</span><input type="range" id="seek" aria-label="Scrub animation" min="0" max="{duration}" step="0.01" value="0"><span class="clock" id="clock">0.0 / {duration:.1f}s</span></div></main><script type="application/json" id="scenario">{data}</script><script>{js}</script></body></html>'''
+
+if __name__=='__main__':
+    ap=argparse.ArgumentParser();ap.add_argument('spec');ap.add_argument('--out',required=True);a=ap.parse_args()
+    scenario=json.loads(pathlib.Path(a.spec).read_text());pathlib.Path(a.out).write_text(render(scenario),encoding='utf8');print('wrote',a.out)
+========== END FILE: skills/mr-description/scripts/render_continuous.py ==========
+
+
+========== BEGIN FILE: skills/mr-description/assets/continuous-stepper-template.html ==========
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Background job lifecycle · Continuous</title><style>
+:root{color-scheme:dark;--blue:#9fbbff;--green:#a8e5c9;--red:#eca5ac;--muted:#b9b9b9}*{box-sizing:border-box}html,body{margin:0;background:#000;color:#f5f5f5;font-family:Inter,'Helvetica Neue',Arial,sans-serif}main{max-width:1590px;margin:22px auto;border:1px solid #333;border-radius:8px;overflow:hidden}header{padding:43px 47px 34px;display:flex;justify-content:space-between;gap:25px}.kicker,.phase,.micro,.legend{font:700 12px Consolas,Monaco,monospace;letter-spacing:.025em}.kicker{margin:0 0 38px}h1{font-size:31px;letter-spacing:-.5px;margin:0 0 16px}.subtitle{font-size:17px;color:#eee;max-width:950px;line-height:1.5;margin:0}.controls{display:flex;align-items:center;gap:10px}.controls button{color:#fff;background:#000;border:1px solid #ccc;padding:13px 18px;border-radius:13px;cursor:pointer;font-size:16px}.controls button:hover{background:#171717}.narrative{min-height:93px;padding:24px 47px;border-top:1px solid #292929;border-bottom:1px solid #292929;display:flex;align-items:center}#narrative{font-size:17px;line-height:1.45}.phases{display:flex;position:relative;border-bottom:1px solid #333}.phase{flex:1;padding:28px 21px 39px 47px;text-align:left;color:#aaa;background:transparent;border:0;cursor:pointer}.phase.current{color:white}.phase:hover{background:#101010}.track{position:absolute;left:0;right:0;bottom:0;height:3px;background:#282828}.track span{display:block;width:100%;height:100%;background:var(--blue);transform-origin:left;transform:scaleX(0)}.stage{padding:40px 40px 19px;background:radial-gradient(#202020 .75px,transparent .75px);background-size:9px 9px}.system{max-width:1230px;margin:auto;border:1px solid #333;border-radius:15px;background:#000;overflow:hidden}.client{padding:25px 26px 0}.client h2{font-size:22px;margin:0 0 14px}.client p{font-size:15px;color:#ddd;margin:0 0 28px}.return-label{display:flex;justify-content:space-between;margin-bottom:14px}.micro{font-size:11px}.well{position:relative;display:grid;grid-template-columns:repeat(9,minmax(0,1fr));gap:6px;height:38px}.slot{border:1px dashed #777;border-radius:25px}.pill{position:absolute;top:0;width:calc((100% - 48px)/9);height:38px;border-radius:25px;border:1px solid #d7d7d7;display:flex;align-items:center;justify-content:center;font:700 12px Consolas,monospace;background:#000;will-change:transform,opacity}.pill.selected{border-color:var(--blue);box-shadow:0 0 17px #779fff45}.choice{height:68px;display:flex;justify-content:center;align-items:center;gap:10px;font:700 11px Consolas,monospace;letter-spacing:.02em}.choice strong{color:var(--blue)}.wires{position:relative;height:115px;border-top:1px solid #333}.wires .wire{position:absolute;top:0;bottom:0;width:1px;background:#aaa}.wire.a{left:16.66%}.wire.b{left:50%}.wire.c{left:83.33%}.packet{position:absolute;width:11px;height:11px;background:var(--blue);border:1px solid #e0ebff;border-radius:2px;transform:translate(-5px,-5px);z-index:2}.packet.response{border-radius:100%;background:var(--green)}.processes{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;padding:0 24px 30px}.process{position:relative;border:1px solid #999;border-radius:10px;height:282px;text-align:center;padding:20px}.process .micro{color:#ddd}.process .name{font-size:23px;font-weight:700;margin:11px}.process .count{font-size:20px;margin:12px}.load{display:grid;grid-template-rows:repeat(3,28px);gap:5px;margin-top:24px}.unit{border:1px dashed #777;border-radius:3px;position:relative;overflow:hidden}.unit.active{background:#a5bff4;color:#111;border:1px solid #b4caff}.unit label{font:700 11px Consolas,monospace;display:block;padding-top:7px}.unit .fill{position:absolute;bottom:0;left:0;height:3px;background:#4868b5}.process .notice{color:var(--red);font:700 12px Consolas,monospace;height:16px;margin-top:6px}.history{border-top:1px solid #333;padding:18px 24px 25px}.hist{display:grid;grid-template-columns:repeat(18,1fr);gap:5px;margin-top:12px}.hcell{height:26px;border:1px dashed #777;border-radius:3px;text-align:center;padding-top:6px;font:700 11px Consolas,monospace}.hcell.seen{background:#c2d2f1;color:#14213d;border-color:#c2d2f1}.hcell.failed{background:#dba4ad;color:#2e0d11}.hcell.ok{background:#aee7ca;color:#093622}.legend{display:flex;gap:22px;color:#bbb;padding:18px 47px}.key{display:inline-block;width:12px;height:12px;background:var(--blue);margin-right:7px;vertical-align:middle}.key.success{background:var(--green);border-radius:50%}.key.failure{background:var(--red);border-radius:50%}.timeline{display:flex;gap:15px;align-items:center;border-top:1px solid #333;padding:21px 47px 25px}.timeline input{flex:1;accent-color:var(--blue)}.clock{font:12px Consolas,monospace;color:#bbb;min-width:83px;text-align:right}@media(max-width:900px){header{padding:24px;flex-direction:column}.controls{justify-content:flex-start}.phase{padding:19px 9px;font-size:10px}.stage{overflow-x:auto;padding:15px}.system{min-width:850px}.legend,.timeline,.narrative{padding-left:20px;padding-right:20px}}
+</style></head><body><main><header><div><p class="kicker">FIGURE 04 · BACKGROUND JOBS · CONTINUOUS STEPPER</p><h1>One job, multiple processing attempts</h1><p class="subtitle">A durable work item moves from submission through a failed attempt, retry, and completion.</p></div><div class="controls"><button id="replay">↻ Replay</button><button id="toggle">Ⅱ Pause</button></div></header><section class="narrative"><span id="narrative"></span></section><nav class="phases" aria-label="Timeline phases"><button class="phase current" data-time="0">01&nbsp; SUBMIT JOB</button><button class="phase" data-time="5">02&nbsp; QUEUED WORK</button><button class="phase" data-time="10">03&nbsp; RETRY WORK</button><button class="phase" data-time="16">04&nbsp; COMPLETED</button><div class="track"><span id="progress"></span></div></nav><div class="stage"><div class="system"><section class="client"><h2>Job controller</h2><p>Job snapshots update throughout the same timeline; requests and worker load evolve continuously.</p><div class="return-label"><span class="micro">FIRST OBSERVED</span><span class="micro">LATEST TRANSITION</span></div><div class="well" id="well"></div><div class="choice"><span id="stateLabel">CURRENT JOB</span><strong id="stateValue">IN_PROGRESS</strong><span id="attemptLabel">ATTEMPT 0</span></div></section><div class="wires" id="wires"><div class="wire a"></div><div class="wire b"></div><div class="wire c"></div></div><div class="processes" id="processes"></div><div class="history"><div class="micro">JOB HISTORY · ONE LOGICAL WORK ITEM</div><div class="hist" id="history"></div></div></div></div><div class="legend"><span><i class="key"></i> Request</span><span><i class="key success"></i> Completion</span><span><i class="key failure"></i> Failed attempt</span></div><div class="timeline"><span class="micro">TIME</span><input id="seek" type="range" min="0" max="21" step="0.01" value="0" aria-label="Seek continuously through operation lifecycle"><span class="clock" id="clock">0.0 / 21.0s</span></div></main><script>
+(()=>{const duration=21, names=['API','Queue','Worker'];const events=[{at:0,text:'A client submits a new background job to the API.'},{at:2,text:'The API records IN_PROGRESS, then publishes the work item.'},{at:4,text:'The message is queued and the client receives HTTP 202 while processing continues.'},{at:5,text:'A second status request sees the same in-progress job.'},{at:7,text:'The worker claims the message and begins attempt one.'},{at:9,text:'A transient downstream error interrupts attempt one; retry remains possible.'},{at:10.5,text:'The retry policy schedules another delivery of the same logical job.'},{at:13,text:'The worker reclaims the job and starts attempt two.'},{at:16,text:'The downstream processing succeeds, and the job transitions to SUCCESS.'},{at:18.5,text:'A subsequent status request observes the completed result.'}];const phases=[0,5,10,16];let t=0,playing=!matchMedia('(prefers-reduced-motion: reduce)').matches,last=null;const $=x=>document.getElementById(x);const wells=$('well');const slots=[];for(let i=0;i<9;i++){let el=document.createElement('i');el.className='slot';wells.appendChild(el);slots.push(el)}const pills=[];for(let i=0;i<9;i++){let el=document.createElement('span');el.className='pill';el.style.opacity=0;wells.appendChild(el);pills.push(el)}const proc=[];names.forEach((name,i)=>{let el=document.createElement('section');el.className='process';el.innerHTML=`<div class="micro">${i===1?'DURABLE QUEUE':'SERVER PROCESS'}</div><div class="name">${name}</div><div class="count">0</div><div class="micro">${i===1?'PENDING MESSAGES':'CONCURRENT REQUESTS'}</div><div class="notice"></div><div class="load"></div>`;for(let j=0;j<3;j++){let u=document.createElement('div');u.className='unit';u.innerHTML='<label></label><i class="fill"></i>';el.querySelector('.load').appendChild(u)}$('processes').appendChild(el);proc.push(el)});const hist=[];for(let i=0;i<18;i++){let e=document.createElement('span');e.className='hcell';$('history').appendChild(e);hist.push(e)}const packets=[];function mkPacket(at,dt,server,response=false){let e=document.createElement('span');e.className='packet'+(response?' response':'');$('wires').appendChild(e);packets.push({at,dt,server,response,el:e})}[[0.4,1.4,0,false],[3.0,1.1,1,false],[4.8,0.9,0,true],[5.4,1.1,0,false],[6.9,1.2,2,false],[9.2,1.1,2,true],[10.6,1.3,1,false],[12.4,1.1,2,false],[16,1.1,2,true],[18.5,1.2,0,false],[19.5,0.8,0,true]].forEach(p=>mkPacket(...p));function interp(a,b,f){return a+(b-a)*Math.max(0,Math.min(1,f))}function currentEvent(time){let k=events[0];for(let e of events)if(time>=e.at)k=e;return k}const snapshots=[{at:.3,name:'KEY',pos:0},{at:2,name:'INPROG',pos:1},{at:3.9,name:'QUEUED',pos:2},{at:5.8,name:'POLL',pos:3},{at:7.2,name:'A1',pos:4},{at:9.3,name:'FAIL',pos:5},{at:11,name:'RETRY',pos:6},{at:13.2,name:'A2',pos:7},{at:16.1,name:'SUCCESS',pos:8}];const checkpoints=[{at:0,label:'submit'},{at:2,label:'state'},{at:4,label:'202'},{at:5.8,label:'poll'},{at:7,label:'claim'},{at:9.3,label:'fail',fail:true},{at:11,label:'retry'},{at:13,label:'claim'},{at:16.2,label:'ok',ok:true},{at:19,label:'poll'},{at:20,label:'ok',ok:true}];function render(time){t=Math.max(0,Math.min(duration,time));$('seek').value=t;$('clock').textContent=t.toFixed(1)+' / 21.0s';$('progress').style.transform=`scaleX(${t/duration})`;let phase=0;phases.forEach((at,i)=>{if(t>=at)phase=i});document.querySelectorAll('.phase').forEach((e,i)=>e.classList.toggle('current',phase===i));$('narrative').textContent=currentEvent(t).text;const state=t>=16?'SUCCESS':'IN_PROGRESS';$('stateValue').textContent=state;$('stateValue').style.color=t>=16?'var(--green)':'var(--blue)';$('attemptLabel').textContent=t<7?'ATTEMPT 0':t<10?'ATTEMPT 1':'ATTEMPT 2';snapshots.forEach((s,i)=>{let e=pills[i],f=(t-s.at)/.7;if(f<0){e.style.opacity=0;return}e.style.opacity=Math.min(1,f);e.textContent=s.name;e.classList.toggle('selected',i===snapshots.reduce((k,v,j)=>t>=v.at?j:k,0));let x=(100/9*s.pos),offset=f<1?Math.round((1-f)*-22):0;e.style.left=`calc(${x}% - ${s.pos*(48/9)}px)`;e.style.transform=`translateY(${offset}px)`});let api=t<1.5?1:t>5&&t<6.5?1:t>18.5&&t<20?1:0;let queue=t>3.5&&t<7?1:t>10&&t<13?1:0;let worker=t>=7&&t<9.5?1:t>=13&&t<16.5?1:0;[api,queue,worker].forEach((c,i)=>{let e=proc[i];e.querySelector('.count').textContent=c;e.querySelector('.notice').textContent=i===2&&t>9.2&&t<12.7?'TRANSIENT FAILURE':i===2&&t>=16?'COMPLETE':'';[...e.querySelectorAll('.unit')].forEach((u,j)=>{u.classList.toggle('active',j<c);u.querySelector('label').textContent=j<c?'Request':'';u.querySelector('.fill').style.width=j<c?`${((t*24)%100)}%`:'0%'})});for(const p of packets){const f=(t-p.at)/p.dt;p.el.style.display=f<0||f>1?'none':'block';p.el.style.left=(100/6+p.server*100/3)+'%';p.el.style.top=(p.response?1-f:f)*100+'%'}checkpoints.forEach((e,i)=>{hist[i].className='hcell'+(t>=e.at?(e.fail?' failed':e.ok?' ok':' seen'):'');hist[i].textContent=t>=e.at?e.label:''})}function toggle(v){playing=v;$('toggle').textContent=v?'Ⅱ Pause':'▷ Play'}$('replay').onclick=()=>{render(0);toggle(true)};$('toggle').onclick=()=>toggle(!playing);$('seek').oninput=e=>{toggle(false);render(+e.target.value)};document.querySelectorAll('.phase').forEach(e=>e.onclick=()=>{toggle(false);render(+e.dataset.time)});function tick(now){if(last===null)last=now;let dt=Math.min((now-last)/1000,.06);last=now;if(playing){render(t+dt);if(t>=duration)toggle(false)}requestAnimationFrame(tick)}render(0);toggle(playing);requestAnimationFrame(tick)})();
+</script></body></html>
+========== END FILE: skills/mr-description/assets/continuous-stepper-template.html ==========
+
+========== BEGIN FILE: skills/mr-description/assets/example-continuous-stepper.json ==========
+{
+  "figure": "FIGURE 04 \u00b7 BACKGROUND JOBS \u00b7 CONTINUOUS STEPPER",
+  "title": "One job, multiple processing attempts",
+  "subtitle": "A durable work item moves from submission through a failed attempt, retry, and completion.",
+  "card_title": "Job controller",
+  "card_note": "Job snapshots update throughout the same timeline; requests and worker load evolve continuously.",
+  "phases": [
+    {
+      "at": 0,
+      "label": "Submit job"
+    },
+    {
+      "at": 5,
+      "label": "Queued work"
+    },
+    {
+      "at": 10,
+      "label": "Retry work"
+    },
+    {
+      "at": 16,
+      "label": "Completed"
+    }
+  ],
+  "events": [
+    {
+      "at": 0,
+      "text": "A client submits a new background job to the API."
+    },
+    {
+      "at": 2,
+      "text": "The API records IN_PROGRESS, then publishes the work item."
+    },
+    {
+      "at": 4,
+      "text": "The message is queued and the client receives HTTP 202 while processing continues."
+    },
+    {
+      "at": 5,
+      "text": "A second status request sees the same in-progress job."
+    },
+    {
+      "at": 7,
+      "text": "The worker claims the message and begins attempt one."
+    },
+    {
+      "at": 9,
+      "text": "A transient downstream error interrupts attempt one; retry remains possible."
+    },
+    {
+      "at": 10.5,
+      "text": "The retry policy schedules another delivery of the same logical job."
+    },
+    {
+      "at": 13,
+      "text": "The worker reclaims the job and starts attempt two."
+    },
+    {
+      "at": 16,
+      "text": "The downstream processing succeeds, and the job transitions to SUCCESS."
+    },
+    {
+      "at": 18.5,
+      "text": "A subsequent status request observes the completed result."
+    }
+  ]
+}
+========== END FILE: skills/mr-description/assets/example-continuous-stepper.json ==========
+
+========== BEGIN FILE: skills/mr-description/scripts/render_continuous_stepper.py ==========
+#!/usr/bin/env python3
+"""Render a continuously animated phase-navigation stepper (stdlib only).
+
+Example:
+  python3 render_continuous_stepper.py assets/example-continuous-stepper.json --out diagram.html
+The template has a reusable timeline, evolving process loads, moving request/response
+packets, status snapshots, and event history. Customize narrative/event times and
+phase labels through the spec. This is a diagram animation, not an execution simulator.
+"""
+import argparse, json, pathlib, re, html
+
+def main():
+    ap=argparse.ArgumentParser()
+    ap.add_argument('spec')
+    ap.add_argument('--out',required=True)
+    a=ap.parse_args()
+    spec=json.loads(pathlib.Path(a.spec).read_text())
+    template=pathlib.Path(__file__).resolve().parent.parent.joinpath('assets/continuous-stepper-template.html').read_text()
+    # Replace textual fields in HTML. Use HTML escape for supplied prose.
+    root=spec.get('figure','FIGURE 01 · CONTINUOUS STEPPER')
+    for old,new in [
+        ('FIGURE 04 · BACKGROUND JOBS · CONTINUOUS STEPPER',root),
+        ('One job, multiple processing attempts',spec.get('title','One job, multiple processing attempts')),
+        ('A durable work item moves from submission through a failed attempt, retry, and completion.',spec.get('subtitle','A job moves through processing and completion.')),
+        ('Job controller',spec.get('card_title','Job controller')),
+        ('Job snapshots update throughout the same timeline; requests and worker load evolve continuously.',spec.get('card_note','Snapshots and worker load evolve continuously.')),
+    ]:
+        template=template.replace(old,html.escape(str(new),quote=True))
+    # Edit the phase labels without modifying the static layout / timestamp model.
+    for old,p in zip(['SUBMIT JOB','QUEUED WORK','RETRY WORK','COMPLETED'],spec.get('phases',[])):
+        template=template.replace(old,html.escape(str(p['label']),quote=True))
+    # The four phase timestamps control navigation and active-state highlighting.
+    phases=spec.get('phases',[])
+    if len(phases)==4:
+        for old,p in zip(['0','5','10','16'],phases):
+            # Exact token replacement only inside HTML data-time attrs.
+            template=template.replace('data-time="'+old+'"','data-time="'+str(p['at'])+'"')
+        template=template.replace('const phases=[0,5,10,16];','const phases='+json.dumps([p['at'] for p in phases])+';')
+    # Narrative event updates: as time advances, descriptions change independently of phase labels.
+    if 'events' in spec:
+        events=spec['events']
+        if not all(isinstance(e.get('at'),(int,float)) and isinstance(e.get('text'),str) for e in events):
+            raise ValueError('Each event needs numeric at and string text')
+        payload=json.dumps(sorted(events,key=lambda e:e['at']),ensure_ascii=False).replace('</','<\/')
+        template=re.sub(r'const events=\[.*?\];const phases=',lambda m:'const events='+payload+';const phases=',template,count=1,flags=re.S)
+    pathlib.Path(a.out).write_text(template,encoding='utf-8')
+    print('wrote',a.out)
+
+if __name__=='__main__': main()
+========== END FILE: skills/mr-description/scripts/render_continuous_stepper.py ==========
